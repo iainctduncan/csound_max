@@ -1,0 +1,9 @@
+Notes on building csound6~
+
+- copied over simplemsp and got it to build
+- copied over the headers
+- in xcode project general, added to Linked Frameworks with
+   /Library/Frameworks/CsoundLib64.framework/Headers/
+- now it compiles with the csound header in there
+
+- got it to compile with no option 

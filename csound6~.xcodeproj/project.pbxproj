@@ -8,12 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		22CF119B0EE9A8250054F513 /* csound6~.c in Sources */ = {isa = PBXBuildFile; fileRef = 22CF119A0EE9A8250054F513 /* csound6~.c */; };
+		4437125826FE8748000A04B4 /* CsoundLib64.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4437125726FE8748000A04B4 /* CsoundLib64.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		22CF10220EE984600054F513 /* maxmspsdk.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = maxmspsdk.xcconfig; path = ../../maxmspsdk.xcconfig; sourceTree = SOURCE_ROOT; };
 		22CF119A0EE9A8250054F513 /* csound6~.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = "csound6~.c"; sourceTree = "<group>"; };
 		2FBBEAE508F335360078DB84 /* csound6~.mxo */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "csound6~.mxo"; sourceTree = BUILT_PRODUCTS_DIR; };
+		4437125726FE8748000A04B4 /* CsoundLib64.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CsoundLib64.framework; path = ../../../../../../../../../Library/Frameworks/CsoundLib64.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -21,6 +23,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4437125826FE8748000A04B4 /* CsoundLib64.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +36,7 @@
 				22CF10220EE984600054F513 /* maxmspsdk.xcconfig */,
 				22CF119A0EE9A8250054F513 /* csound6~.c */,
 				19C28FB4FE9D528D11CA2CBB /* Products */,
+				4437125626FE8748000A04B4 /* Frameworks */,
 			);
 			name = iterator;
 			sourceTree = "<group>";
@@ -43,6 +47,14 @@
 				2FBBEAE508F335360078DB84 /* csound6~.mxo */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		4437125626FE8748000A04B4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4437125726FE8748000A04B4 /* CsoundLib64.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -153,6 +165,10 @@
 			baseConfigurationReference = 22CF10220EE984600054F513 /* maxmspsdk.xcconfig */;
 			buildSettings = {
 				COPY_PHASE_STRIP = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(LOCAL_LIBRARY_DIR)/Frameworks",
+				);
 				GCC_OPTIMIZATION_LEVEL = 0;
 			};
 			name = Development;
@@ -161,7 +177,12 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 22CF10220EE984600054F513 /* maxmspsdk.xcconfig */;
 			buildSettings = {
+				"C74_SYM_LINKER_FLAGS[arch=*]" = "@$(C74SUPPORT)/max-includes/c74_linker_flags.txt";
 				COPY_PHASE_STRIP = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(LOCAL_LIBRARY_DIR)/Frameworks",
+				);
 			};
 			name = Deployment;
 		};

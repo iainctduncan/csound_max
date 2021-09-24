@@ -9,11 +9,65 @@
 #include "ext_obex.h"		// required for "new" style objects
 #include "z_dsp.h"			// required for MSP objects
 
+// below copied from csoundapi
+#include <stdio.h>
+#if defined(__APPLE__)
+#include <CsoundLib64/csound.h>
+#else
+#include <csound/csound.h>
+#endif
+
+#define CS_MAX_CHANS 32
+#define MAXMESSTRING 16384
+
+#define MIDI_QUEUE_MAX 1024
+#define MIDI_QUEUE_MASK 1023
+
+// ICTD: not sure if I should be using MYFLT or not here
+typedef struct _channelname {
+  t_symbol *name;
+  MYFLT   value;
+  struct _channelname *next;
+} channelname;
+
+typedef struct _midi_queue {
+  int writep;
+  int readp;
+  unsigned char values[MIDI_QUEUE_MAX];
+} midi_queue;
 
 // struct to represent the object's state
 typedef struct _csound6 {
 	t_pxobject		ob;			// the object itself (t_pxobject in MSP instead of t_object)
 	double			offset; 	// the value of a property of our object
+
+  // stuff from csoundapi
+  CSOUND   *csound;
+  // all the below will eventually need to be active
+  float   f;
+  //t_sample *outs[CS_MAX_CHANS];
+  //t_sample *ins[CS_MAX_CHANS];
+  int     vsize;
+  int     chans;
+  int     pksmps;
+  int     pos;
+  int     cleanup;
+  int     end;
+  int     numlets;
+  int     result;
+  int     run;
+  int     ver;
+  char    **cmdl;
+  int       argnum;
+  channelname *iochannels;
+  //t_outlet *ctlout;
+  //t_outlet *bangout;
+  int     messon;
+  char     *csmess;
+  t_symbol *curdir;
+  midi_queue *mq;
+  char *orc;
+
 } t_csound6;
 
 
@@ -47,13 +101,79 @@ void ext_main(void *r)
 	class_dspinit(c);
 	class_register(CLASS_BOX, c);
 	csound6_class = c;
+
+  {
+    int v1, v2, v3;
+    v1 = csoundGetVersion();
+    v3 = v1 % 10;
+    v2 = (v1 / 10) % 100;
+    v1 = v1 / 1000;
+    post("\ncsound6~ 1.01\n"
+           " A Max csound class using the Csound %d.%02d.%d API\n"
+           "(c) V Lazzarini, 2005-2007, I Duncan 2021\n", v1, v2, v3);
+  }
+
+
+
 }
+
+// copied directly from csound_pd, should "just work"
+int isCsoundFile(char *in){
+    int     len;
+    int     i;
+    const char *extensions[6] = {".csd", ".orc", ".sco",".CSD",".ORC",".SCO"};
+    len = strlen(in);
+    for (i = 0; i < len; i++, in++) {
+      if (*in == '.') break;
+    }
+    if (*in == '.') {
+      for(i=0; i<6;i++)
+        if (strcmp(in,extensions[i])==0) return 1;
+    }
+    return 0;
+}
+
 
 
 void *csound6_new(t_symbol *s, long argc, t_atom *argv)
 {
 	t_csound6 *x = (t_csound6 *)object_alloc(csound6_class);
 
+  // make a csound!
+  x->csound = (CSOUND *) csoundCreate(x);
+  // stuff from csoundapi
+  x->orc = NULL;
+  x->numlets = 1;
+  x->result = 1;
+  x->run = 1;
+  x->chans = 1;
+  x->cleanup = 0;
+  x->cmdl = NULL;
+  x->iochannels = NULL;
+  x->csmess = malloc(MAXMESSTRING);
+  x->messon = 1;
+  //x->curdir = canvas_getcurrentdir();
+
+  csoundSetHostImplementedAudioIO(x->csound, 1, 0);
+  // stuff from csoundapi that eventually needs to be active
+  //csoundSetInputChannelCallback(x->csound, in_channel_value_callback);
+  //csoundSetOutputChannelCallback(x->csound, out_channel_value_callback);
+  //csoundSetHostImplementedMIDIIO(x->csound, 1);
+  //csoundSetExternalMidiInOpenCallback(x->csound, open_midi_callback);
+  //csoundSetExternalMidiReadCallback(x->csound, read_midi_callback);
+  //csoundSetExternalMidiInCloseCallback(x->csound, close_midi_callback);
+  //csoundSetMessageCallback(x->csound, message_callback);
+ 
+  // normally csoundCompile takes argc and argv, so presumably
+  // I need to convert from atoms to strings somehow
+  //csoundCompile(csound, argc, argv); 
+  // from csoundapi:
+  //x->result = csoundCompile(x->csound, x->argnum, (const char **)cmdl);
+  x->result = csoundCompile(x->csound, 0, NULL);
+  
+
+
+  // from simplemsp~
 	if (x) {
 		dsp_setup((t_pxobject *)x, 1);	// MSP inlets: arg is # of inlets and is REQUIRED!
 		// use 0 if you don't need inlets
