@@ -4,7 +4,12 @@
 
 #include "ext.h"			// standard Max include, always required (except in Jitter)
 #include "ext_obex.h"		// required for "new" style objects
+#include "ext_common.h"
+#include "ext_strings.h"
 #include "z_dsp.h"			// required for MSP objects
+#include "common/commonsyms.c"
+#include "string.h"
+
 
 // below copied from csound6
 #include <stdio.h>
@@ -37,6 +42,13 @@ typedef struct _midi_queue {
 typedef struct _csound6 {
 	t_pxobject		ob;			// the object itself (t_pxobject in MSP instead of t_object)
 	double			offset; 	// the value of a property of our object
+ 
+  char *csd_file; 
+  char *csd_fullpath; 
+  char *orc_file; 
+  char *orc_fullpath; 
+  char *sco_file; 
+  char *sco_fullpath; 
 
   // stuff from csound6
   CSOUND   *csound;
@@ -64,6 +76,7 @@ typedef struct _csound6 {
   char     *csmess;
   t_symbol *curdir;
   midi_queue *mq;
+
   char *orc;
 
 } t_csound6;
@@ -134,6 +147,27 @@ int isCsoundFile(char *in){
     return 0;
 }
 
+// get full path for a source file
+// is_main_source_file is whether it's the box argument 
+const char * csound6_get_fullpath(const char *file_arg){
+    //post("csound6_get_fullpath(), file_arg %s", file_arg);
+    t_fourcc filetype = 'TEXT', outtype;
+    char filename[MAX_PATH_CHARS];
+    short path_id;
+    strcpy(filename, file_arg);    
+    if (locatefile_extended(filename, &path_id, &outtype, &filetype, 1)) { // non-zero: not found
+        post("csound6~: file %s not found", file_arg);
+        return NULL;
+    }
+    // we have a file and a path short, need to convert it to abs path 
+    char *full_path = sysmem_newptr( sizeof(char) * 1024); 
+    path_toabsolutesystempath(path_id, filename, full_path);
+    //post("  - full_path: %s", full_path);
+    return full_path;
+}
+ 
+
+
 void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   post("cound6_new()");
 	t_csound6 *x = (t_csound6 *)object_alloc(csound6_class);
@@ -150,8 +184,10 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->csmess = malloc(MAXMESSTRING);
   x->messon = 1;
   x->compiled = 0;
-  // the below is Pd specific, not sure if it needs to be ported or even exists for Max
-  //x->curdir = canvas_getcurrentdir();
+
+  x->csd_file = NULL;
+  x->orc_file = NULL;
+  x->sco_file = NULL;
 
   csoundSetHostImplementedAudioIO(x->csound, 1, 0);
   // stuff from csound6 that eventually needs to be active
@@ -162,18 +198,34 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   //csoundSetExternalMidiReadCallback(x->csound, read_midi_callback);
   //csoundSetExternalMidiInCloseCallback(x->csound, close_midi_callback);
   //csoundSetMessageCallback(x->csound, message_callback);
- 
-  // temp: build a csd file from the command line 
-  const char * csd_path = "/Users/iainduncan/Documents/max-code/csound/csound-1.csd";
-  post("compiling %s", csd_path);
-  // TODO so we will get the file argument and then find the full path and then compile
-  const char *cs_cmdl[] = { "csound", csd_path};
+
+  // expects args to be either csd file, orc file, or pair of orc and sco
+  // this needs to be smarter later to allow passing in attrs as they appear
+  // in the argc and argc list, annoyingly
+  post("csound6~ new, arc: %i", argc);
+  if(argc == 1){
+      x->csd_file = atom_getsym(argv)->s_name;
+      post("csd: %s", x->csd_file);
+      x->csd_fullpath = csound6_get_fullpath(x->csd_file);
+  }else if (argc == 2){
+      x->orc_file = atom_getsym(argv)->s_name;
+      x->sco_file = atom_getsym(argv+1)->s_name;
+      post("orc: %s sco: %s", x->orc_file, x->sco_file);
+  }
+
+  // if doing csd, compile 
+  if( x->csd_file ){
+    //const char * csd_path = "/Users/iainduncan/Documents/max-code/csound/csound-1.csd";
+    post("compiling %s", x->csd_fullpath);
+    const char *cs_cmdl[] = { "csound", x->csd_fullpath};
+    x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl);
+  }else{
+    post("ERROR orc/sco pairs not yet implemented");
+  }
 
   x->run = 0;
-  x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl);
-
   if (!x->compiled) {
-    post("compiled, starting %s", csd_path);
+    post("compiled, starting %s", x->csd_file);
     x->compiled = 1;
     x->end = 0;
     x->cleanup = 1;
@@ -181,7 +233,6 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
     x->pksmps = csoundGetKsmps(x->csound);
     x->numlets = x->chans;
     post("x->chans: %i, x->pksmps %i, x->numlets: %i", x->chans, x->pksmps, x->numlets);
-
 
     // create a signal inlet and outlet for each csound channel
 	  dsp_setup((t_pxobject *)x, x->numlets);	  // MSP inlets: arg is # of inlets and is REQUIRED!
