@@ -57,7 +57,7 @@ typedef struct _csound6 {
   // the below were type t_sample in the pd version
   double *outs[CS_MAX_CHANS];
   double *ins[CS_MAX_CHANS];
-  int     compiled;
+  bool    compiled;
   int     vsize;
   int     chans;
   int     pksmps;
@@ -65,10 +65,11 @@ typedef struct _csound6 {
   int     cleanup;
   int     end;
   int     numlets;
-  int     run;
+  bool    running;
   int     ver;
-  char    **cmdl;
-  int       argnum;
+  int     num_cs_args;
+  char    **cs_cmdl;
+  int     argnum;
   channelname *iochannels;
   //t_outlet *ctlout;
   //t_outlet *bangout;
@@ -88,10 +89,17 @@ void csound6_free(t_csound6 *x);
 void csound6_dsp64(t_csound6 *x, t_object *dsp64, short *count, double samplerate, long maxvectorsize, long flags);
 void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long numins, double **outs, long numouts, long sampleframes, long flags, void *userparam);
 
+void csound6_init_csound(t_csound6 *x);
+void csound6_reset(t_csound6 *x);
 void csound6_bang(t_csound6 *x);
+void csound6_start(t_csound6 *x);
+void csound6_stop(t_csound6 *x);
+void csound6_rewind(t_csound6 *x);
+void csound6_offset(t_csound6 *x, double arg);
+
 int csound6_csound_start(t_csound6 *x);
 
-static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 
 // global class pointer variable
 static t_class *csound6_class = NULL;
@@ -109,6 +117,11 @@ void ext_main(void *r)
 	t_class *c = class_new("csound6~", (method)csound6_new, (method)dsp_free, (long)sizeof(t_csound6), 0L, A_GIMME, 0);
 
   class_addmethod(c, (method)csound6_bang, "bang", NULL, 0);
+  class_addmethod(c, (method)csound6_reset, "reset", NULL, 0);
+  class_addmethod(c, (method)csound6_start, "start", NULL, 0);
+  class_addmethod(c, (method)csound6_stop, "stop", NULL, 0);
+  class_addmethod(c, (method)csound6_rewind, "rewind", NULL, 0);
+  class_addmethod(c, (method)csound6_offset, "offset", A_FLOAT, 0);
   class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
 
 	class_addmethod(c, (method)csound6_dsp64,	"dsp64",A_CANT, 0);
@@ -176,12 +189,12 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->csound = (CSOUND *) csoundCreate(x);
   x->orc = NULL;
   x->numlets = 1;
-  x->run = 1;
+  x->running = false;
   x->chans = 1;
   x->cleanup = 0;
-  x->cmdl = NULL;
+  x->cs_cmdl = NULL;
   x->iochannels = NULL;
-  x->csmess = malloc(MAXMESSTRING);
+  //x->csmess = malloc(MAXMESSTRING);
   x->messon = 1;
   x->compiled = 0;
 
@@ -214,19 +227,20 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   }
 
   // if doing csd, compile 
-  if( x->csd_file ){
+  if( x->csd_fullpath ){
     //const char * csd_path = "/Users/iainduncan/Documents/max-code/csound/csound-1.csd";
     post("compiling %s", x->csd_fullpath);
     const char *cs_cmdl[] = { "csound", x->csd_fullpath};
-    x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl);
+    if( csoundCompile(x->csound, 2, (const char **)cs_cmdl) ){
+      post("csound6: error compiling %s", x->csd_fullpath);
+    }else 
+      x->compiled = true;
   }else{
     post("ERROR orc/sco pairs not yet implemented");
   }
 
-  x->run = 0;
-  if (!x->compiled) {
-    post("compiled, starting %s", x->csd_file);
-    x->compiled = 1;
+  if( x->compiled ){
+    post("compiled", x->csd_file);
     x->end = 0;
     x->cleanup = 1;
     x->chans = csoundGetNchnls(x->csound);
@@ -240,12 +254,82 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
       outlet_new(x, "signal");
     }
     x->pos = 0;
-    x->run = 0;   // in PD, it starts playback automatically (this is what the pd one does)
   }
   else
     post("csound6~ error: could not compile");
 
 	return (x);
+}
+
+void csound6_init_csound(t_csound6 *x){
+  post("csound6_init_csound()");
+
+  //if (x->end && x->cleanup) {
+  //  csoundCleanup(x->csound);
+  //  x->cleanup = 0;
+  //}
+  if(x->compiled){
+    csoundCleanup(x->csound);
+  }
+  csoundReset(x->csound);
+  csoundSetHostImplementedAudioIO(x->csound, 1, 0);
+  //csoundSetExternalMidiInOpenCallback(x->csound, open_midi_callback);
+  //csoundSetExternalMidiReadCallback(x->csound, read_midi_callback);
+  //csoundSetExternalMidiInCloseCallback(x->csound, close_midi_callback);
+
+  if(!x->csd_fullpath){
+    post("csound6 error: no csd file set for compiling");
+    return;
+  }else{
+    post("compiling %s", x->csd_fullpath);
+  }
+
+  const char *cs_cmdl[] = { "csound", x->csd_fullpath};
+  if( !csoundCompile(x->csound, 2, (const char **)cs_cmdl) ){
+    post("csound6: compiled %s", x->csd_fullpath);
+    x->compiled = true;
+  }else{
+    post("ERROR re-initializing csound");
+  }
+}
+
+void csound6_reset(t_csound6 *x){
+  post("csound6_reset()");
+  // stop playback so perform function won't try to render
+  x->running = false;
+  csound6_init_csound(x); 
+}
+
+void csound6_start(t_csound6 *x){
+  post("csound6_start()");
+  if(x->compiled){
+    x->running = true;
+  }else{
+    post("csound6 error: csound not compiled, aborting");
+  }
+}
+
+void csound6_stop(t_csound6 *x){
+  post("csound6_stop()");
+  x->running = false;
+}
+
+void csound6_rewind(t_csound6 *x){
+  post("csound6_rewind()");
+  if(x->compiled){
+    csoundSetScoreOffsetSeconds(x->csound, (MYFLT) 0);
+    csoundRewindScore(x->csound);
+    csoundSetScorePending(x->csound, 1);
+  }
+}
+
+void csound6_offset(t_csound6 *x, double arg){
+  post("csound6_offset(), %5.2f", arg);
+  if(x->compiled){
+    csoundSetScoreOffsetSeconds(x->csound, (MYFLT) arg);
+    csoundRewindScore(x->csound);
+    csoundSetScorePending(x->csound, 1);
+  }
 }
 
 void csound6_bang(t_csound6 *x){
@@ -263,18 +347,18 @@ int csound6_csound_start(t_csound6 *x){
   int max_vector_size = sys_getblksize();
   if( x->pksmps != max_vector_size ){
     post("error, csound ksmps must match Max signal vector size (for now)");
-    x->run = 0;
+    x->running = false;
     return 1;
   }else{
-    post("... setting x->run to 1");
-    x->run = 1;
+    post("... setting x->running to true");
+    x->running = true;
     return 0; 
   }
 }
 
-static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-    if( x->compiled == 0 ){
-      post("csound6~ error: csound not compiled");
+void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+    if( x->compiled == false ){
+      post("csound6~ error in csound6_event: csound not compiled");
       return;
     }
     t_symbol *evt_type = atom_getsym(argv);
@@ -322,12 +406,12 @@ void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long numins,
   csin = csoundGetSpin(x->csound);
 
   // do nothing if we aren't running
-  if( x->run ){
+  if( x->running ){
 
     // render a ksmp vector, which updates the csout and csin pointers
     if( x->end = csoundPerformKsmps(x->csound) ){
       // todo: pd version sends a bang when done
-      x->run = 0;
+      x->running = 0;
     }else{
       for (int i=0; i < x->numlets; i++){
         for(int s=0; s < sampleframes; s++){
