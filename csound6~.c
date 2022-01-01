@@ -1,4 +1,4 @@
-/**
+/***
 	csound6~: a port of the csound
 */
 
@@ -25,23 +25,16 @@
 #define MIDI_QUEUE_MAX 1024
 #define MIDI_QUEUE_MASK 1023
 
-// ICTD: not sure if I should be using MYFLT or not here
+// linked list struct for iochannels, with name/value pairs
 typedef struct _channelname {
   t_symbol *name;
   MYFLT   value;
   struct _channelname *next;
 } channelname;
 
-typedef struct _midi_queue {
-  int writep;
-  int readp;
-  unsigned char values[MIDI_QUEUE_MAX];
-} midi_queue;
-
-// struct to represent the object's state
 typedef struct _csound6 {
-	t_pxobject		ob;			// the object itself (t_pxobject in MSP instead of t_object)
-	double			offset; 	// the value of a property of our object
+	t_pxobject		ob;			
+	double			offset; 	
  
   char *csd_file; 
   char *csd_fullpath; 
@@ -52,7 +45,6 @@ typedef struct _csound6 {
 
   // stuff from csound6
   CSOUND   *csound;
-  // all the below will eventually need to be active
   float   f;
   // the below were type t_sample in the pd version
   double *outs[CS_MAX_CHANS];
@@ -70,14 +62,12 @@ typedef struct _csound6 {
   int     num_cs_args;
   char    **cs_cmdl;
   int     argnum;
-  channelname *iochannels;
+  channelname *iochannels;  
   //t_outlet *ctlout;
   //t_outlet *bangout;
   int     messon;
   char     *csmess;
   t_symbol *curdir;
-  midi_queue *mq;
-
   char *orc;
 
 } t_csound6;
@@ -104,6 +94,17 @@ void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 // global class pointer variable
 static t_class *csound6_class = NULL;
 
+// channel functions ported from Pd version (in prog)
+static channelname *create_channel(channelname *ch, char *channel);
+static MYFLT get_channel_value(t_csound6 *x, char *channel);
+static int set_channel_value(t_csound6 *x, t_symbol *channel, MYFLT value);
+static void destroy_channels(channelname *ch);
+static void csound6_register_controls(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+static void in_channel_value_callback(CSOUND *csound, const char *name, void *val, const void *channelType);
+//static void out_channel_value_callback(CSOUND *csound, const char *name, void *val, const void *channelType);
+static void csound6_control(t_csound6 *x, t_symbol *s, double f);
+static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+
 
 //***********************************************************************************************
 
@@ -116,13 +117,19 @@ void ext_main(void *r)
   // XXX: need to fix this to make it call free??
 	t_class *c = class_new("csound6~", (method)csound6_new, (method)dsp_free, (long)sizeof(t_csound6), 0L, A_GIMME, 0);
 
-  class_addmethod(c, (method)csound6_bang, "bang", NULL, 0);
-  class_addmethod(c, (method)csound6_reset, "reset", NULL, 0);
-  class_addmethod(c, (method)csound6_start, "start", NULL, 0);
-  class_addmethod(c, (method)csound6_stop, "stop", NULL, 0);
-  class_addmethod(c, (method)csound6_rewind, "rewind", NULL, 0);
-  class_addmethod(c, (method)csound6_offset, "offset", A_FLOAT, 0);
+  class_addmethod(c, (method) csound6_bang, "bang", NULL, 0);
+  class_addmethod(c, (method) csound6_reset, "reset", NULL, 0);
+  class_addmethod(c, (method) csound6_start, "start", NULL, 0);
+  class_addmethod(c, (method) csound6_stop, "stop", NULL, 0);
+  class_addmethod(c, (method) csound6_rewind, "rewind", NULL, 0);
+  class_addmethod(c, (method) csound6_offset, "offset", A_FLOAT, 0);
   class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
+
+  // IN PROG
+  // NB this was registered for the 'set' message in the PD version and called csoundapi_channel
+  class_addmethod(c, (method) csound6_register_controls, "controls", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_control, "control", A_DEFSYM, A_DEFFLOAT, 0);
+  class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
 
 	class_addmethod(c, (method)csound6_dsp64,	"dsp64",A_CANT, 0);
 	class_dspinit(c);
@@ -203,9 +210,10 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->sco_file = NULL;
 
   csoundSetHostImplementedAudioIO(x->csound, 1, 0);
-  // stuff from csound6 that eventually needs to be active
-  //csoundSetInputChannelCallback(x->csound, in_channel_value_callback);
+  csoundSetInputChannelCallback(x->csound, in_channel_value_callback);
   //csoundSetOutputChannelCallback(x->csound, out_channel_value_callback);
+
+  // stuff from csound6 that eventually needs to be active
   //csoundSetHostImplementedMIDIIO(x->csound, 1);
   //csoundSetExternalMidiInOpenCallback(x->csound, open_midi_callback);
   //csoundSetExternalMidiReadCallback(x->csound, read_midi_callback);
@@ -264,6 +272,7 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
 void csound6_init_csound(t_csound6 *x){
   post("csound6_init_csound()");
 
+  // PD version
   //if (x->end && x->cleanup) {
   //  csoundCleanup(x->csound);
   //  x->cleanup = 0;
@@ -395,7 +404,7 @@ void csound6_dsp64(t_csound6 *x, t_object *dsp64, short *count, double samplerat
 }
 
 
-// IN PROG:
+// IN PROG: WORKING but only for ksmps == vector size
 void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long numins, 
           double **outs, long numouts, long sampleframes, long flags, void *userparam){
   //post("csound6_perform65");
@@ -425,7 +434,141 @@ void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long numins,
       for(int s=0; s < sampleframes; s++) outs[i][s] = 0.0; 
     }
   }
+}
 
+// LEGACY invalue system - deprecate
+// all this does is find the channel and set the value pointer
+// returns 1 on success, 0 if named channel not found
+static int set_channel_value(t_csound6 *x, t_symbol *channel, MYFLT value){
+    //post("set_channel_value() chan: %s val: %.2f", channel->s_name, value);
+    channelname *ch = x->iochannels;
+    // traverse the linked list of channels to find the right channel and set it's value
+    if (ch == NULL) return 0; 
+    while (strcmp(ch->name->s_name, channel->s_name)) {
+      ch = ch->next;
+      if (ch == NULL) return 0;  
+    }
+    ch->value = value;
+    //post(" - found channel, has set %s to %.2f", ch->name->s_name, ch->value);
+    return 1;
+}
+
+// LEGACY invalue system - deprecate
+static MYFLT get_channel_value(t_csound6 *x, char *channel){
+    //post("get_channel_value() chan: '%s'", channel);
+    channelname *ch;
+    ch = x->iochannels;
+    if (ch == NULL) return (MYFLT) 0; 
+    while (strcmp(ch->name->s_name, channel)) {
+      ch = ch->next;
+      if (ch == NULL) return (MYFLT) 0; 
+    }
+    //post("  - returning: %.2f", ch->value);
+    return ch->value;
+}
+
+// LEGACY invalue system - deprecate
+// create a new channel and add to the channel linked list
+static channelname *create_channel(channelname *ch, char *channel){
+    //post("create_channel %s", channel);
+    channelname *tmp = ch, *newch = (channelname *) sysmem_newptr( sizeof(channelname) );
+    newch->name = gensym(channel);
+    newch->value = 0.f;
+    newch->next = tmp;
+    ch = newch;
+    return ch;
+}
+
+// LEGACY invalue system - deprecate
+static void destroy_channels(channelname *ch){
+    channelname *tmp = ch;
+    while (ch != NULL) {
+      tmp = ch->next;
+      sysmem_freeptr(ch);
+      ch = tmp;
+    }
+}
+
+// LEGACY invalue system - deprecate
+// called from the "controls" message, creates named channels
+static void csound6_register_controls(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+    post("csound6_register_controls()");
+    int     i;
+    char    chan_name[128];
+    for (i = 0; i < argc; i++) {
+      // is the below even necessary??
+      strcpy( chan_name, atom_getsym(argv+i)->s_name );
+      // PD had the below
+      // XXX: we should be checking the channel doesn't exist already first!
+      //post(" registering %s", chan_name);
+      x->iochannels = create_channel(x->iochannels, chan_name);
+    }
+}
+
+// LEGACY invalue system - deprecate
+static void csound6_control(t_csound6 *x, t_symbol *s, double f){
+    post("csound6_control, setting %s to %.2f", s->s_name, f);
+    if (!set_channel_value(x, s, f))
+      post("csound6~ error: channel not found");
+}
+
+// LEGACY invalue system - deprecate
+// callback fired by csound engine, ported directly from Pd version
+static void in_channel_value_callback(CSOUND *csound, const char *name, void *valp, const void *channelType) {
+    //post("in_channel_value_callback, chan name: %s", name);
+    t_csound6 *x = (t_csound6 *) csoundGetHostData(csound);
+    MYFLT *vp = (MYFLT *) valp;
+    *vp = get_channel_value(x, (char *) name);
+}
+
+// callback fired by csound engine, adapted from Pd version
+// allows sending control values from Csound
+//static void out_channel_value_callback(CSOUND *csound, const char *name, 
+//                                      void *valp, const void *channelType) {
+//    t_atom  at[2];
+//    t_csound6 *x = (t_csound6 *) csoundGetHostData(csound);
+//    MYFLT val = *((MYFLT *) valp);
+//    set the symbol and value for the output key/val pair
+//    SETFLOAT(&at[1], (t_float) val);
+//    SETSYMBOL(&at[0], gensym((char *) name));
+//    outlet_list(x->ctlout, gensym("list"), 2, at);
+//}
+
+// called on the 'chnset' input message, series of key value pairs
+// working
+static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  post("csound6_set_channel()");
+  CSOUND *csound = x->csound;
+  int i;
+  char chan_name[128]; // temp string for channel name
+  MYFLT chan_val;
+
+  // loop through the key/val pairs
+  for(i=0; i < argc; i+=2){
+    // copy channel name from key of this pair
+    // Pd: atom_string(&argv[i], chn, 64);
+    if( atom_gettype( &argv[i] ) != A_SYM ){
+      post("csound6~ error: chnset keys must be symbols");
+      return;
+    }else{
+      // ??? not sure if the below is necessary...
+      strcpy( chan_name, atom_getsym(argv+i)->s_name );
+    }
+    if(i+1 < argc){
+      // set the value to be either a string of number
+      switch (atom_gettype( &argv[i+1])) {
+        case A_SYM: 
+          csoundSetStringChannel(csound, chan_name, atom_getsym( &argv[i+1] )->s_name);
+          break;
+        case A_LONG:
+        case A_FLOAT:
+          chan_val = atom_getfloat( &argv[i+1] );
+          //post("setting %s to %.2f", chan_name, chan_val);
+          csoundSetControlChannel(csound, chan_name, chan_val);
+          break;
+      }
+    }
+  }
 }
 
 
