@@ -79,6 +79,8 @@ typedef struct _csound6 {
   // TODO dynamic orchestra compilation
   //char *orc;
 
+  int     vector_pass;
+
 } t_csound6;
 
 
@@ -114,6 +116,13 @@ static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
 
 //***********************************************************************************************
 
+// helpers
+bool hasFileExtension(char *filename, char *extension){
+    char *end = strrchr(filename, '.');
+    return strcmp(end, extension) == 0 ? true : false;
+}
+
+
 void ext_main(void *r){
   // XXX: need to fix this to make it call free??
 	t_class *c = class_new("csound6~", (method)csound6_new, (method)dsp_free, 
@@ -144,29 +153,13 @@ void ext_main(void *r){
     v3 = v1 % 10;
     v2 = (v1 / 10) % 100;
     v1 = v1 / 1000;
-    post("\ncsound6~ 1.01\n"
-           " A Max Csound class using the Csound %d.%02d.%d API\n"
-           "(c) Iain C.T. Duncan, 2021, Victor Lazzarini, 2005-2007\n", v1, v2, v3);
+    post("csound6~ 1.01 - "
+           "A Max Csound class using the Csound %d.%02d.%d API\n"
+           "(c) Victor Lazzarini, 2005-2007. Iain C.T. Duncan, 2022\n", v1, v2, v3);
   }
 
 
 
-}
-
-// copied directly from csound_pd, should "just work"
-int isCsoundFile(char *in){
-    int     len;
-    int     i;
-    const char *extensions[6] = {".csd", ".orc", ".sco",".CSD",".ORC",".SCO"};
-    len = strlen(in);
-    for (i = 0; i < len; i++, in++) {
-      if (*in == '.') break;
-    }
-    if (*in == '.') {
-      for(i=0; i<6;i++)
-        if (strcmp(in,extensions[i])==0) return 1;
-    }
-    return 0;
 }
 
 // get full path for a source file
@@ -189,7 +182,7 @@ const char * csound6_get_fullpath(const char *file_arg){
 }
  
 void *csound6_new(t_symbol *s, long argc, t_atom *argv){
-  post("cound6_new()");
+  //post("cound6_new()");
 	t_csound6 *x = (t_csound6 *)object_alloc(csound6_class);
 
   // set up internal state
@@ -209,6 +202,8 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->orc_file = NULL;
   x->sco_file = NULL;
 
+  x->vector_pass = 0;
+
   csoundSetHostImplementedAudioIO(x->csound, 1, 0);
   csoundSetInputChannelCallback(x->csound, in_channel_value_callback);
   //csoundSetOutputChannelCallback(x->csound, out_channel_value_callback);
@@ -220,42 +215,48 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   //csoundSetExternalMidiInCloseCallback(x->csound, close_midi_callback);
   //csoundSetMessageCallback(x->csound, message_callback);
 
-  // expects args to be either csd file, orc file, or pair of orc and sco
-  // this needs to be smarter later to allow passing in attrs as they appear
-  // in the argc and argc list, annoyingly
-  post("csound6~ new, arc: %i", argc);
-  if(argc == 1){
-      x->csd_file = atom_getsym(argv)->s_name;
-      post("csd: %s", x->csd_file);
-      x->csd_fullpath = csound6_get_fullpath(x->csd_file);
-  }else if (argc == 2){
-      x->orc_file = atom_getsym(argv)->s_name;
-      x->sco_file = atom_getsym(argv+1)->s_name;
-      post("orc: %s sco: %s", x->orc_file, x->sco_file);
+  // loop through args to find csd, orc, and sco files
+  for(int i=0; i < argc; i++){
+    if( atom_gettype( &argv[i] ) == A_SYM ){
+      char *arg_str = atom_getsym( &argv[i] )->s_name;
+      if( hasFileExtension( arg_str, ".csd" ) ){
+        x->csd_file = arg_str;
+      }else if( hasFileExtension( arg_str, ".orc" ) ){
+        x->orc_file = arg_str;
+      } else if( hasFileExtension( arg_str, ".sco" ) ){
+        x->sco_file = arg_str;
+      }
+    }
   }
-
-  // if doing csd, compile 
-  if( x->csd_fullpath ){
-    //const char * csd_path = "/Users/iainduncan/Documents/max-code/csound/csound-1.csd";
-    post("compiling %s", x->csd_fullpath);
+  // if csd, we compile on that, otherwise uses orc and optional sco
+  if( x->csd_file ){
+    post("compiling csd: %s", x->csd_file);
+    x->csd_fullpath = csound6_get_fullpath(x->csd_file);
     const char *cs_cmdl[] = { "csound", x->csd_fullpath};
-    if( csoundCompile(x->csound, 2, (const char **)cs_cmdl) ){
-      post("csound6: error compiling %s", x->csd_fullpath);
-    }else 
-      x->compiled = true;
-  }else{
-    post("ERROR orc/sco pairs not yet implemented");
+    x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl) == 0 ? true : false;   
   }
-
+  else if( x->orc_file && x->sco_file == NULL){
+    post("compiling orc file: %s", x->orc_file);
+    x->orc_fullpath = csound6_get_fullpath(x->orc_file);
+    const char *cs_cmdl[] = { "csound", x->orc_fullpath};
+    x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl) == 0 ? true : false;   
+  }
+  else if( x->orc_file && x->sco_file){
+    post("compiling orc/sco pair: %s %s", x->orc_file, x->sco_file);
+    x->orc_fullpath = csound6_get_fullpath(x->orc_file);
+    x->sco_fullpath = csound6_get_fullpath(x->sco_file);
+    const char *cs_cmdl[] = { "csound", x->orc_fullpath, x->sco_fullpath};
+    x->compiled = csoundCompile(x->csound, 3, (const char **)cs_cmdl) == 0 ? true : false;   
+  }
+ 
   if( x->compiled ){
-    post("csound6~ compiled", x->csd_file);
+    //post("csound6~ compiled", x->csd_file);
     x->end = 0;
     x->cleanup = 1;
     x->chans = csoundGetNchnls(x->csound);
     x->ksmps = csoundGetKsmps(x->csound);
     x->numlets = x->chans;
-    post("x->chans: %i, x->ksmps %i, x->numlets: %i", x->chans, x->ksmps, x->numlets);
-
+    //post("x->chans: %i, x->ksmps %i, x->numlets: %i", x->chans, x->ksmps, x->numlets);
     // create a signal inlet and outlet for each csound channel
 	  dsp_setup((t_pxobject *)x, x->numlets);	  // MSP inlets: arg is # of inlets and is REQUIRED!
     for (int i = 0; i < x->numlets && i < CS_MAX_CHANS; i++){
@@ -305,7 +306,7 @@ static void csound6_init_csound(t_csound6 *x){
 }
 
 static void csound6_reset(t_csound6 *x){
-  post("csound6_reset()");
+  //post("csound6_reset()");
   // stop playback so perform function won't try to render
   x->running = false;
   csound6_init_csound(x); 
@@ -313,23 +314,23 @@ static void csound6_reset(t_csound6 *x){
 
 // handler for the "start" message
 static void csound6_start(t_csound6 *x){
-  post("csound6_start()");
+  //post("csound6_start()");
   csound6_csound_start(x);
 }
 
 // handler for the bang message
 static void csound6_bang(t_csound6 *x){
-  post("csound6_bang");
+  //post("csound6_bang");
   csound6_csound_start(x);
 }
 
 static void csound6_stop(t_csound6 *x){
-  post("csound6_stop()");
+  //post("csound6_stop()");
   x->running = false;
 }
 
 static void csound6_rewind(t_csound6 *x){
-  post("csound6_rewind()");
+  //post("csound6_rewind()");
   if(x->compiled){
     csoundSetScoreOffsetSeconds(x->csound, (MYFLT) 0);
     csoundRewindScore(x->csound);
@@ -338,7 +339,7 @@ static void csound6_rewind(t_csound6 *x){
 }
 
 static void csound6_offset(t_csound6 *x, double arg){
-  post("csound6_offset(), %5.2f", arg);
+  //post("csound6_offset(), %5.2f", arg);
   if(x->compiled){
     csoundSetScoreOffsetSeconds(x->csound, (MYFLT) arg);
     csoundRewindScore(x->csound);
@@ -346,12 +347,11 @@ static void csound6_offset(t_csound6 *x, double arg){
   }
 }
 
-
 // sanity check of sr, ksmps, channels
 // should be run after any compile
 // has side effect of setting max_vector_size and kpasses_per_vector 
 static bool csound6_ready(t_csound6 *x){
-  post("csound6_ready() checking rates");
+  //post("csound6_ready() checking rates");
   x->max_vector_size = sys_getblksize();
   if(!x->compiled){
     post("csound6~ error: csound is not compiled");
@@ -376,10 +376,11 @@ static bool csound6_ready(t_csound6 *x){
 }
 
 static int csound6_csound_start(t_csound6 *x){
-  post("csound6_csound_start()");
+  //post("csound6_csound_start()");
+  post("csound starting");
   // if csound is ready, set the running flag which will kick off performance
   x->running = csound6_ready(x); 
-  post("  - x->running now: %i", x->running);
+  //post("  - x->running now: %i", x->running);
 }
 
 static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
@@ -420,39 +421,50 @@ static void csound6_dsp64(t_csound6 *x, t_object *dsp64, short *count, double sa
   object_method(dsp64, gensym("dsp_add64"), x, csound6_perform64, 0, NULL);
 }
 
-
 // IN PROG: WORKING but only for ksmps == vector size
 static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long numins, 
           double **outs, long numouts, long sampleframes, long flags, void *userparam){
   //post("csound6_perform65");
 
-  MYFLT  *csout, *csin;
+  //MYFLT  *csout, *csin;
   // get the csound working buffers
-  csout = csoundGetSpout(x->csound);
-  csin = csoundGetSpin(x->csound);
+  //csout = csoundGetSpout(x->csound);
+  //csin = csoundGetSpin(x->csound);
 
-  // TODO: allow multiple kpasses
+  //if( x->vector_pass % 16 == 0 ){ 
+  //    post("ksmps: %i kpasses per vector %i", x->ksmps, x->kpasses_per_vector);
+  //}
 
-  // do nothing if we aren't running
+  int dest_sample_index = 0; 
+  int kpass_sample_offset = 0;
   if( x->running ){
-    // render a ksmp vector, which updates the csout and csin pointers
-    if( x->end = csoundPerformKsmps(x->csound) ){
-      // todo: pd version sends a bang when done
-      x->running = 0;
-    }else{
-      for (int i=0; i < x->numlets; i++){
-        for(int s=0; s < sampleframes; s++){
-          outs[i][s] = csoundGetSpoutSample(x->csound, s, i);
+
+    // outer loop of ksmps, only ksmps as even divisor of Max vector size allowed
+    for(int kpass=0; kpass < x->kpasses_per_vector; kpass++){
+      kpass_sample_offset = kpass * x->ksmps;
+      // render a ksmp vector, which updates the csout and csin pointers
+      if( x->end = csoundPerformKsmps(x->csound) ){
+        // todo maybe?: pd version sends a bang when done
+        x->running = 0;
+      }else{
+        for (int chan=0; chan < x->numlets; chan++){
+          for(int s=0; s < x->ksmps; s++){
+            dest_sample_index = kpass_sample_offset + s;
+            outs[chan][dest_sample_index] = csoundGetSpoutSample(x->csound, s, chan);
+          }
         }
       }
-    }
+    } // end kpass loop
   }
-  // if not running hold output at 0 - not sure if this is necessary
+
+  // if not running hold output at 0 
   else{
     for (int i=0; i < x->numlets; i++){
       for(int s=0; s < sampleframes; s++) outs[i][s] = 0.0; 
     }
   }
+  
+  x->vector_pass++;
 }
 
 // LEGACY invalue system - deprecate
