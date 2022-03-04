@@ -232,6 +232,7 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   if( x->csd_file ){
     post("compiling csd: %s", x->csd_file);
     x->csd_fullpath = csound6_get_fullpath(x->csd_file);
+    post("  full path: %s", x->csd_fullpath);
     const char *cs_cmdl[] = { "csound", x->csd_fullpath};
     x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl) == 0 ? true : false;   
   }
@@ -442,6 +443,16 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
     // outer loop of ksmps, only ksmps as even divisor of Max vector size allowed
     for(int kpass=0; kpass < x->kpasses_per_vector; kpass++){
       kpass_sample_offset = kpass * x->ksmps;
+
+      // audio input to csound
+      // not sure if this should be here or needs to be after the perform ksmps call
+      for (int chan=0; chan < x->numlets; chan++){
+          for(int s=0; s < x->ksmps; s++){
+            dest_sample_index = kpass_sample_offset + s;
+            csoundSetSpinSample(x->csound, s, chan, (MYFLT) ins[chan][dest_sample_index] );
+          }
+      }
+
       // render a ksmp vector, which updates the csout and csin pointers
       if( x->end = csoundPerformKsmps(x->csound) ){
         // todo maybe?: pd version sends a bang when done
