@@ -1,6 +1,6 @@
 # Csound6~
 ## A minimal real time csound class using the Csound6 API
-## (c) Iain C.T. Duncan 2022, based on work by Victor Lazzarini, (c) 2005-2013.
+### (c) Iain C.T. Duncan 2022, based on work by Victor Lazzarini, (c) 2005-2013.
 
 Csound6~ is mostly a port of Victor Lazzarini's csound object for Pure Data. It provides
 a minimal csound interface using the csound API and thus should provide better performance
