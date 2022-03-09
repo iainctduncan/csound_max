@@ -1,0 +1,24 @@
+{
+    "author" : "Iain C.T. Duncan (Max version), Victor Lazzarini (PureData predecessor)",
+    "description" : "csound6~ is a minimal real time Csound class using the Csound6 API",
+    "homepatcher" : "csound6~.maxhelp",
+    "max_version_max" : "none",
+    "max_version_min" : "8",
+    "name" : "csound6~",
+    "os" : {
+        "macintosh" : {
+            "platform" : [ "x64" ],
+            "min_version" : "none"
+        },
+        "windows" : {
+            "platform" : [ "x64", "ia32" ],
+            "min_version" : "none"
+        }
+    },
+    "package_extra" : {
+        "copyright" : "Copyright (c) 2022 Iain C.T. Duncan."
+    },
+    "tags" : [ "csound"],
+    "version" : "0.1.0",
+    "website" : "https://github.com/iainctduncan/csound_max"
+}
