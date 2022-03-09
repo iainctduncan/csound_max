@@ -25,6 +25,7 @@ of the legacy csound object.
 
 ## Installation
 - Csound6~ is currently compiled for Mac (Intel) only. Windows and M1 coming shortly!
+- Install Csound6 for your platform from https://csound.com/download.html
 - Download the release and expand in your Max packages directory.
 - To run the help file, ensure the path to the help folder is in your Max filepaths
 - Running with Overdrive enabled and Audio In Interrupt is recommended.
