@@ -10,7 +10,7 @@ of the legacy csound object.
 ## Features
 - Allows playing csd, orc, and sco files
 - Plays realtime messages with score syntax
-- Scores playback time can be manipulated with no latecy
+- Scores playback time can be manipulated with minimal latency
 - Supports up to 32 inlets and outlets, corresponding to number of csound channels
 - Can receive realtime modulation data using the chnget and invalue opcodes
 
@@ -27,6 +27,10 @@ of the legacy csound object.
 - Csound6~ is currently compiled for Mac (Intel) only. Windows and M1 coming shortly!
 - Download the release and expand in your Max packages directory.
 - To run the help file, ensure the path to the help folder is in your Max filepaths
+- Running with Overdrive enabled and Audio In Interrupt is recommended.
+
+## Reporting Issues
+- please create tickets on this projects GitHub issues board.
 
 
 
