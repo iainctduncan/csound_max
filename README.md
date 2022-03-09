@@ -32,5 +32,7 @@ of the legacy csound object.
 ## Reporting Issues
 - please create tickets on this projects GitHub issues board.
 
+## Help out
+- if you are experienced at compiling on Windows, help on the windows build would be much appreciated
 
 
