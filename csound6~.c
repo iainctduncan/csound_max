@@ -1,5 +1,5 @@
 /***
-	csound6~: a port of the csound
+	csound6~: a port of the csoundapi object
 */
 
 #include "ext.h"			// standard Max include, always required (except in Jitter)
@@ -10,8 +10,6 @@
 #include "common/commonsyms.c"
 #include "string.h"
 
-
-// below copied from csound6
 #include <stdio.h>
 #if defined(__APPLE__)
 #include <CsoundLib64/csound.h>
@@ -22,8 +20,8 @@
 #define CS_MAX_CHANS 32
 #define MAXMESSTRING 16384
 
-#define MIDI_QUEUE_MAX 1024
-#define MIDI_QUEUE_MASK 1023
+//#define MIDI_QUEUE_MAX 1024
+//#define MIDI_QUEUE_MASK 1023
 
 // global class pointer variable
 static t_class *csound6_class = NULL;
@@ -37,39 +35,33 @@ typedef struct _channelname {
 
 typedef struct _csound6 {
 	t_pxobject		ob;			
-	double			offset; 	
- 
-  char *csd_file; 
-  char *csd_fullpath; 
-  char *orc_file; 
-  char *orc_fullpath; 
-  char *sco_file; 
-  char *sco_fullpath; 
+  char    *csd_file; 
+  char    *csd_fullpath; 
+  char    *orc_file; 
+  char    *orc_fullpath; 
+  char    *sco_file; 
+  char    *sco_fullpath; 
 
   // stuff from csound6
   CSOUND   *csound;
-  float   f;
-  // the below were type t_sample in the pd version
-  double *outs[CS_MAX_CHANS];
-  double *ins[CS_MAX_CHANS];
   bool    compiled;
   bool    ready;      // all checks pass
   bool    running;
-  int     vsize;
+  bool    errors;     // flag if settings changed in illegal way
+	double	offset; 	
   int     chans;
   int     ksmps;
   int     kpass_in_vector;
   int     kpasses_per_vector;
   int     max_vector_size;
   int     pos;
-  int     cleanup;
   int     end;
   int     numlets;
   int     ver;
   int     num_cs_args;
   char    **cs_cmdl;
-  int     argnum;
   channelname *iochannels;  
+  // TODO
   //t_outlet *ctlout;
   //t_outlet *bangout;
  
@@ -77,10 +69,8 @@ typedef struct _csound6 {
   int     message_level;
   char    *cs_message;
 
-  // TODO dynamic orchestra compilation
+  // TODO maybe? dynamic orchestra compilation
   //char *orc;
-
-  int     vector_pass;
 
 } t_csound6;
 
@@ -93,7 +83,7 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
 
 static void csound6_init_csound(t_csound6 *x, bool is_initial_compile);
 static void csound6_destroy(t_csound6 *x);
-static bool csound6_ready(t_csound6 *x);
+static bool csound6_check_ready(t_csound6 *x);
 
 static void csound6_reset(t_csound6 *x);
 static void csound6_bang(t_csound6 *x);
@@ -102,10 +92,10 @@ static void csound6_stop(t_csound6 *x);
 static void csound6_rewind(t_csound6 *x);
 static void csound6_offset(t_csound6 *x, double arg);
 static void csound6_messages(t_csound6 *x, long arg);
-static int csound6_csound_start(t_csound6 *x);
+static int csound6_start_csound(t_csound6 *x);
 static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 
-// channel functions ported from Pd version (in prog)
+// channel functions ported from Pd version, output not yet done
 static channelname *create_channel(channelname *ch, char *channel);
 static MYFLT get_channel_value(t_csound6 *x, char *channel);
 static int set_channel_value(t_csound6 *x, t_symbol *channel, MYFLT value);
@@ -120,51 +110,10 @@ static void message_callback(CSOUND *, int attr, const char *format,va_list vali
  
 //***********************************************************************************************
 
-// helpers
+// misc helpers
 bool hasFileExtension(char *filename, char *extension){
     char *end = strrchr(filename, '.');
     return strcmp(end, extension) == 0 ? true : false;
-}
-
-
-void ext_main(void *r){
-  // XXX: need to fix this to make it call free??
-	t_class *c = class_new("csound6~", (method)csound6_new, (method)csound6_free, 
-                         (long)sizeof(t_csound6), 0L, A_GIMME, 0);
-
-  class_addmethod(c, (method) csound6_bang, "bang", NULL, 0);
-  class_addmethod(c, (method) csound6_reset, "reset", NULL, 0);
-  class_addmethod(c, (method) csound6_start, "start", NULL, 0);
-  class_addmethod(c, (method) csound6_stop, "stop", NULL, 0);
-  class_addmethod(c, (method) csound6_rewind, "rewind", NULL, 0);
-  class_addmethod(c, (method) csound6_offset, "offset", A_FLOAT, 0);
-  class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
-
-  // LEGACY control stuff, NB this was registered for the 'set' message in the PD version 
-  // and called csoundapi_channel
-  class_addmethod(c, (method) csound6_register_controls, "controls", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_control, "control", A_DEFSYM, A_DEFFLOAT, 0);
-
-	class_addmethod(c, (method)csound6_dsp64,	"dsp64",A_CANT, 0);
-	class_dspinit(c);
-	class_register(CLASS_BOX, c);
-	csound6_class = c;
-
-  {
-    int v1, v2, v3;
-    v1 = csoundGetVersion();
-    v3 = v1 % 10;
-    v2 = (v1 / 10) % 100;
-    v1 = v1 / 1000;
-    post("csound6~ 1.01 - "
-           "A Max Csound class using the Csound %d.%02d.%d API\n"
-           "(c) Victor Lazzarini, 2005-2007. Iain C.T. Duncan, 2022\n", v1, v2, v3);
-  }
-
-
-
 }
 
 // get full path for a source file
@@ -185,6 +134,46 @@ const char * csound6_get_fullpath(const char *file_arg){
     //post("  - full_path: %s", full_path);
     return full_path;
 }
+
+
+void ext_main(void *r){
+	t_class *c = class_new("csound6~", (method)csound6_new, (method)csound6_free, 
+                         (long)sizeof(t_csound6), 0L, A_GIMME, 0);
+
+  class_addmethod(c, (method) csound6_bang, "bang", NULL, 0);
+  class_addmethod(c, (method) csound6_reset, "reset", NULL, 0);
+  class_addmethod(c, (method) csound6_start, "start", NULL, 0);
+  class_addmethod(c, (method) csound6_stop, "stop", NULL, 0);
+  class_addmethod(c, (method) csound6_rewind, "rewind", NULL, 0);
+  class_addmethod(c, (method) csound6_offset, "offset", A_FLOAT, 0);
+  class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
+
+  // LEGACY control stuff, NB this was registered for the 'set' message in the PD version 
+  // and called csoundapi_channel, but we are initializing with the "controls" message
+  class_addmethod(c, (method) csound6_register_controls, "controls", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_control, "control", A_DEFSYM, A_DEFFLOAT, 0);
+
+	class_addmethod(c, (method)csound6_dsp64,	"dsp64", A_CANT, 0);
+	class_dspinit(c);
+	class_register(CLASS_BOX, c);
+	csound6_class = c;
+
+  {
+    int v1, v2, v3;
+    v1 = csoundGetVersion();
+    v3 = v1 % 10;
+    v2 = (v1 / 10) % 100;
+    v1 = v1 / 1000;
+    post("csound6~ 1.01 - "
+           "A Max Csound class using the Csound %d.%02d.%d API\n"
+           "(c) Iain C.T. Duncan, 2022.\n"
+           "Based on work for Pd by Victor Lazzarini, 2005-2007. ", v1, v2, v3);
+  }
+
+}
+
  
 void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   //post("cound6_new()");
@@ -192,12 +181,11 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
 
   // set up internal state
   x->csound = (CSOUND *) csoundCreate(x);
-  // x->orc = NULL;
-  x->numlets = 1;
+  x->numlets = 0;
   x->compiled = 0;
   x->running = false;
   x->kpass_in_vector = 0;
-  x->chans = 1;
+  x->chans = 2;
   x->cs_cmdl = NULL;
   x->iochannels = NULL;
   x->cs_message = sysmem_newptr(MAXMESSTRING);
@@ -205,9 +193,7 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->csd_file = NULL;
   x->orc_file = NULL;
   x->sco_file = NULL;
-
-  x->vector_pass = 0;
-  x->cleanup = 0;
+  x->errors = false;
   x->end = 0;
 
   // loop through args to find csd, orc, and sco files
@@ -231,7 +217,7 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
 
 // called from new or reset, with is_initial_compile true from new
 static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
-  post("csound6_init_csound()");
+  //post("csound6_init_csound()");
  
   x->csound = (CSOUND *) csoundCreate(x);
   csoundSetHostImplementedAudioIO(x->csound, 1, 0);
@@ -273,24 +259,26 @@ static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
 
   x->ksmps = csoundGetKsmps(x->csound);
 
+  // number of inlets and outlets can only be set at object creation, not on recompile
   if( is_initial_compile ){
     x->chans = csoundGetNchnls(x->csound);
     x->numlets = x->chans;
-    post("x->chans: %i, x->ksmps %i, x->numlets: %i", x->chans, x->ksmps, x->numlets);
+    // post("x->chans: %i, x->ksmps %i, x->numlets: %i", x->chans, x->ksmps, x->numlets);
     // create a signal inlet and outlet for each csound channel
 	  dsp_setup((t_pxobject *)x, x->numlets);	  // MSP inlets: arg is # of inlets and is REQUIRED!
     for (int i = 0; i < x->numlets && i < CS_MAX_CHANS; i++){
       outlet_new(x, "signal");
     }
   }else if( x->chans != csoundGetNchnls(x->csound) ){
+    // recompile changed number of channels, so we will pretend we are not compiled
     post("csound~6 error: nchnls cannot be changed after object creation");
-    x->compiled = false;
+    x->errors = true;
   }
   
 }
 
 static void csound6_reset(t_csound6 *x){
-  post("csound6_reset()");
+  //post("csound6_reset()");
   // stop playback so perform function won't try to render
   x->running = false;
   csound6_destroy(x); 
@@ -298,7 +286,7 @@ static void csound6_reset(t_csound6 *x){
 }
 
 static void csound6_destroy(t_csound6 *x){
-  post("csound_destroy()");
+  //post("csound_destroy()");
   // TODO 
   //if (x->iochannels != NULL)
   //    destroy_channels(x->iochannels);
@@ -312,46 +300,45 @@ static void csound6_destroy(t_csound6 *x){
 }
 
 static void csound6_free(t_csound6 *x){
-    post("csound6_free()");	
-    if(x->compiled){
-      csoundCleanup(x->csound);
-      csoundDestroy(x->csound);
-    }
-    dsp_free((t_pxobject *)x);
-    sysmem_freeptr(x->cs_message); 
+  //post("csound6_free()");	
+  if(x->compiled){
+    csoundCleanup(x->csound);
+    csoundDestroy(x->csound);
+  }
+  dsp_free((t_pxobject *)x);
+  sysmem_freeptr(x->cs_message); 
 }
 
 
 // handler for the "start" message
 static void csound6_start(t_csound6 *x){
   //post("csound6_start()");
-  csound6_csound_start(x);
+  csound6_start_csound(x);
 }
 
 // handler for the bang message
 static void csound6_bang(t_csound6 *x){
   //post("csound6_bang");
-  csound6_csound_start(x);
+  csound6_start_csound(x);
 }
 
 static void csound6_stop(t_csound6 *x){
-  //post("csound6_stop()");
+  post("csound stop");
   x->running = false;
 }
 
 static void csound6_rewind(t_csound6 *x){
-  //post("csound6_rewind()");
+  post("csound rewind");
   if(x->compiled){
     csoundSetScoreOffsetSeconds(x->csound, (MYFLT) 0);
     csoundRewindScore(x->csound);
     csoundSetScorePending(x->csound, 1);
     x->end = 0;
-    x->cleanup = 1;
   }
 }
 
 static void csound6_offset(t_csound6 *x, double arg){
-  //post("csound6_offset(), %5.2f", arg);
+  post("csound offset: %5.2f", arg);
   if(x->compiled){
     csoundSetScoreOffsetSeconds(x->csound, (MYFLT) arg);
     csoundRewindScore(x->csound);
@@ -362,10 +349,11 @@ static void csound6_offset(t_csound6 *x, double arg){
 // sanity check of sr, ksmps, channels
 // should be run after any compile
 // has side effect of setting max_vector_size and kpasses_per_vector 
-static bool csound6_ready(t_csound6 *x){
-  //post("csound6_ready() checking rates");
+static bool csound6_check_ready(t_csound6 *x){
+  //post("csound6_check_ready() checking rates");
   x->max_vector_size = sys_getblksize();
-  if(!x->compiled){
+  if(!x->compiled || x->errors == true){
+    // for the purpose of messages, we pretend illegal compliation (x->errors) is not compiled
     post("csound6~ error: csound is not compiled");
     return false;
   }
@@ -387,42 +375,39 @@ static bool csound6_ready(t_csound6 *x){
   return true; 
 }
 
-static int csound6_csound_start(t_csound6 *x){
-  //post("csound6_csound_start()");
-  post("csound6~ start");
+// playback only happens after receiving the start message, for score
+// or realtime events, so we can check readiness here
+static int csound6_start_csound(t_csound6 *x){
   // if csound is ready, set the running flag which will kick off performance
-  x->running = csound6_ready(x); 
-  //post("  - x->running now: %i", x->running);
+  x->running = csound6_check_ready(x); 
+  if(x->running)
+    post("csound start");
 }
 
 static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-    if( x->compiled == false ){
-      post("csound6~ error in csound6_event: csound not compiled");
-      return;
-    }
-    t_symbol *evt_type = atom_getsym(argv);
-    if( evt_type != gensym("i") && evt_type != gensym("f") && evt_type != gensym("e") ){
-      post("csound6~ error: valid event types are i, f, and e");
-      return;
-    }
-    // make an array of floats for the pfields arguments
-    MYFLT   *pfields;
-    int num_pfields = argc - 1;
-    pfields  = (MYFLT *) sysmem_newptr( num_pfields * sizeof(MYFLT) );
-    for (int i=1; i<argc; i++) pfields[i-1] = atom_getfloat( &argv[i] );
+  if( x->running == false ){
+    post("csound6~ realtime event error: csound is not running");
+    return;
+  }
+  t_symbol *evt_type = atom_getsym(argv);
+  if( evt_type != gensym("i") && evt_type != gensym("f") && evt_type != gensym("e") ){
+    post("csound6~ error: valid event types are i, f, and e");
+    return;
+  }
+  // make an array of floats for the pfields arguments
+  MYFLT   *pfields;
+  int num_pfields = argc - 1;
+  pfields  = (MYFLT *) sysmem_newptr( num_pfields * sizeof(MYFLT) );
+  for (int i=1; i<argc; i++) pfields[i-1] = atom_getfloat( &argv[i] );
 
-    int res = csoundScoreEvent(x->csound, evt_type->s_name[0], pfields, num_pfields);
-    // any event handling means we will need to cleanup
-    x->cleanup = 1;
-    x->end = 0;
-    
-    sysmem_freeptr(pfields);
+  int res = csoundScoreEvent(x->csound, evt_type->s_name[0], pfields, num_pfields);
+  
+  sysmem_freeptr(pfields);
 }
 
 // registers a function for the signal chain in Max
 static void csound6_dsp64(t_csound6 *x, t_object *dsp64, short *count, double samplerate, long maxvectorsize, long flags){
   //post("csound6_dsp64()");
-	//post("my sample rate is: %f", samplerate);
   object_method(dsp64, gensym("dsp_add64"), x, csound6_perform64, 0, NULL);
 }
 
@@ -449,7 +434,7 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
       // render a ksmp vector, which updates the csout and csin pointers
       if( x->end = csoundPerformKsmps(x->csound) ){
         // todo maybe?: pd version sends a bang when done
-        x->running = 0;
+        x->running = false;
       }else{
         for (int chan=0; chan < x->numlets; chan++){
           for(int s=0; s < x->ksmps; s++){
@@ -466,16 +451,15 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
       for(int s=0; s < sampleframes; s++) outs[i][s] = 0.0; 
     }
   }
-  
 }
 
 static void csound6_messages(t_csound6 *x, long arg){
     //post("csound6_messages, arg: %i", arg);
     x->post_messages = (bool) arg; 
     if(arg)
-      post("csound message output enabled");
+      post("csound messages enabled");
     else
-      post("csound message output disabled");
+      post("csound messages disabled");
 }
 
 // called by csound, uses csoundGetHostData to get the Max object
@@ -496,8 +480,6 @@ static void message_callback(CSOUND *csound, int attr, const char *format,va_lis
     if(x->cs_message != NULL && x->post_messages)
       post("%s", x->cs_message);
 }
-
-
 
 
 // LEGACY invalue system - deprecate
@@ -556,7 +538,7 @@ static void destroy_channels(channelname *ch){
 // LEGACY invalue system - deprecate
 // called from the "controls" message, creates named channels
 static void csound6_register_controls(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-    post("csound6_register_controls()");
+    //post("csound6_register_controls()");
     int     i;
     char    chan_name[128];
     for (i = 0; i < argc; i++) {
@@ -564,14 +546,14 @@ static void csound6_register_controls(t_csound6 *x, t_symbol *s, int argc, t_ato
       strcpy( chan_name, atom_getsym(argv+i)->s_name );
       // PD had the below
       // XXX: we should be checking the channel doesn't exist already first!
-      //post(" registering %s", chan_name);
+      post(" registering channel %s", chan_name);
       x->iochannels = create_channel(x->iochannels, chan_name);
     }
 }
 
 // LEGACY invalue system - deprecate
 static void csound6_control(t_csound6 *x, t_symbol *s, double f){
-    post("csound6_control, setting %s to %.2f", s->s_name, f);
+    // post("csound6_control, setting %s to %.2f", s->s_name, f);
     if (!set_channel_value(x, s, f))
       post("csound6~ error: channel not found");
 }
@@ -601,7 +583,7 @@ static void in_channel_value_callback(CSOUND *csound, const char *name, void *va
 // called on the 'chnset' input message, series of key value pairs
 // working
 static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-  post("csound6_set_channel()");
+  //post("csound6_set_channel()");
   CSOUND *csound = x->csound;
   int i;
   char chan_name[128]; // temp string for channel name
