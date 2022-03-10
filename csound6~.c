@@ -11,14 +11,19 @@
 #include "string.h"
 
 #include <stdio.h>
-#if defined(__APPLE__)
-#include <CsoundLib64/csound.h>
-#else
-#include <csound/csound.h>
-#endif
+//#if defined(__APPLE__)
+//#include <CsoundLib64/csound.h>
+//#else
+//#include <csound/csound.h>
+//#endif
+
+// using cmake to find the path below
+#include "csound.h"  
 
 #define CS_MAX_CHANS 32
 #define MAXMESSTRING 16384
+#define OUT_MSG_NAME_SIZE 64
+#define OUT_MSG_MAX 1024
 
 //#define MIDI_QUEUE_MAX 1024
 //#define MIDI_QUEUE_MASK 1023
@@ -32,6 +37,11 @@ typedef struct _channelname {
   MYFLT   value;
   struct _channelname *next;
 } channelname;
+
+typedef struct _out_msg {
+  char name[OUT_MSG_NAME_SIZE];
+  MYFLT   value;
+} out_msg;
 
 typedef struct _csound6 {
 	t_pxobject		ob;			
@@ -69,6 +79,12 @@ typedef struct _csound6 {
   int     message_level;
   char    *cs_message;
 
+  // output msg ring buffer
+  out_msg *out_msg_buf;
+  int     out_msg_read_index;
+  int     out_msg_write_index;
+  int     out_msg_max;
+
   // TODO maybe? dynamic orchestra compilation
   //char *orc;
 
@@ -102,7 +118,7 @@ static int set_channel_value(t_csound6 *x, t_symbol *channel, MYFLT value);
 static void destroy_channels(channelname *ch);
 static void csound6_register_controls(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 static void in_channel_value_callback(CSOUND *csound, const char *name, void *val, const void *channelType);
-//static void out_channel_value_callback(CSOUND *csound, const char *name, void *val, const void *channelType);
+static void out_channel_value_callback(CSOUND *csound, const char *name, void *val, const void *channelType);
 static void csound6_control(t_csound6 *x, t_symbol *s, double f);
 static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 
@@ -196,6 +212,12 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->errors = false;
   x->end = 0;
 
+  // initialize the out msg ring buffer
+  x->out_msg_read_index = 0;
+  x->out_msg_write_index = 0;
+  x->out_msg_max = OUT_MSG_MAX;
+  x->out_msg_buf = (out_msg *) sysmem_newptr( OUT_MSG_MAX * sizeof(out_msg *) );
+
   // loop through args to find csd, orc, and sco files
   for(int i=0; i < argc; i++){
     if( atom_gettype( &argv[i] ) == A_SYM ){
@@ -212,16 +234,18 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
 
   // init csound, is_initial = true
   csound6_init_csound(x, true);
+  post("initialization complete");
 	return (x);
 }
 
 // called from new or reset, with is_initial_compile true from new
 static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
-  //post("csound6_init_csound()");
+  post("csound6_init_csound()");
  
   x->csound = (CSOUND *) csoundCreate(x);
   csoundSetHostImplementedAudioIO(x->csound, 1, 0);
   csoundSetInputChannelCallback(x->csound, in_channel_value_callback);
+  csoundSetOutputChannelCallback(x->csound, out_channel_value_callback);
   csoundSetMessageCallback(x->csound, message_callback);
 
   // if csd, we compile on that, otherwise uses orc and optional sco
@@ -569,16 +593,18 @@ static void in_channel_value_callback(CSOUND *csound, const char *name, void *va
 
 // callback fired by csound engine, adapted from Pd version
 // allows sending control values from Csound
-//static void out_channel_value_callback(CSOUND *csound, const char *name, 
-//                                      void *valp, const void *channelType) {
-//    t_atom  at[2];
-//    t_csound6 *x = (t_csound6 *) csoundGetHostData(csound);
-//    MYFLT val = *((MYFLT *) valp);
-//    set the symbol and value for the output key/val pair
-//    SETFLOAT(&at[1], (t_float) val);
-//    SETSYMBOL(&at[0], gensym((char *) name));
-//    outlet_list(x->ctlout, gensym("list"), 2, at);
-//}
+static void out_channel_value_callback(CSOUND *csound, const char *name, void *valp, const void *channelType) {
+    post("out_channel_value_callback()");
+    t_csound6 *x = (t_csound6 *) csoundGetHostData(csound);
+    double out_value = *((double *) valp);
+    post("out_msg: %s %5.2f", name, out_value);
+
+    // update the struct at the current outbuf write index
+    strcpy( x->out_msg_buf[ x->out_msg_write_index ].name, name);
+    x->out_msg_buf[ x->out_msg_write_index ].value = out_value;
+    x->out_msg_write_index = x->out_msg_write_index < x->out_msg_max ? x->out_msg_write_index++ : 0;
+    // TODO check for ring buffer collission
+}
 
 // called on the 'chnset' input message, series of key value pairs
 // working
