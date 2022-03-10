@@ -11,14 +11,12 @@
 #include "string.h"
 
 #include <stdio.h>
-//#if defined(__APPLE__)
-//#include <CsoundLib64/csound.h>
-//#else
-//#include <csound/csound.h>
-//#endif
-
-// using cmake to find the path below
+#if defined(__APPLE__)
 #include "csound.h"  
+#else
+#include <csound/csound.h>
+#endif
+
 
 #define CS_MAX_CHANS 32
 #define MAXMESSTRING 16384
