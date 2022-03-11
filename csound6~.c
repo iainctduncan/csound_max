@@ -77,11 +77,17 @@ typedef struct _csound6 {
   int     message_level;
   char    *cs_message;
 
-  // output msg ring buffer
+  // output msg stuff
   out_msg *out_msg_buf;
   int     out_msg_read_index;
   int     out_msg_write_index;
   int     out_msg_max;
+  t_clock *out_msg_clock;
+  // number of messages in one render, cannot exceed size of ring buffer
+  int     out_msg_count;    
+  
+  t_linklist *out_msg_list;
+  void    *msg_outlet;
 
   // TODO maybe? dynamic orchestra compilation
   //char *orc;
@@ -121,7 +127,7 @@ static void csound6_control(t_csound6 *x, t_symbol *s, double f);
 static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 
 static void message_callback(CSOUND *, int attr, const char *format,va_list valist);
- 
+static void csound6_out_msg_cb(t_csound6 *x); 
 //***********************************************************************************************
 
 // misc helpers
@@ -213,9 +219,16 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   // initialize the out msg ring buffer
   x->out_msg_read_index = 0;
   x->out_msg_write_index = 0;
+  x->out_msg_count = 0;   
   x->out_msg_max = OUT_MSG_MAX;
   x->out_msg_buf = (out_msg *) sysmem_newptr( OUT_MSG_MAX * sizeof(out_msg *) );
-
+  // clock object used for output msg callbacks
+  x->out_msg_clock = clock_new((t_object *)x, (method) csound6_out_msg_cb);
+ 
+  x->out_msg_list = linklist_new();
+	linklist_flags(x->out_msg_list, OBJ_FLAG_MEMORY);		// <-- use sysmem_freeptr() to free items in the list
+ 
+  
   // loop through args to find csd, orc, and sco files
   for(int i=0; i < argc; i++){
     if( atom_gettype( &argv[i] ) == A_SYM ){
@@ -232,6 +245,10 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
 
   // init csound, is_initial = true
   csound6_init_csound(x, true);
+
+  // make the msg outlet
+  x->msg_outlet = outlet_new( (void *)x, NULL);
+
   post("initialization complete");
 	return (x);
 }
@@ -589,20 +606,76 @@ static void in_channel_value_callback(CSOUND *csound, const char *name, void *va
     *vp = get_channel_value(x, (char *) name);
 }
 
-// callback fired by csound engine, adapted from Pd version
-// allows sending control values from Csound
+
+// callback fired by csound engine, runs in audio thread
 static void out_channel_value_callback(CSOUND *csound, const char *name, void *valp, const void *channelType) {
-    post("out_channel_value_callback()");
+    //post("out_channel_value_callback()");
     t_csound6 *x = (t_csound6 *) csoundGetHostData(csound);
     double out_value = *((double *) valp);
-    post("out_msg: %s %5.2f", name, out_value);
+    //post("  - out_msg: %s %5.2f", name, out_value);
 
-    // update the struct at the current outbuf write index
-    strcpy( x->out_msg_buf[ x->out_msg_write_index ].name, name);
-    x->out_msg_buf[ x->out_msg_write_index ].value = out_value;
-    x->out_msg_write_index = x->out_msg_write_index < x->out_msg_max ? x->out_msg_write_index++ : 0;
-    // TODO check for ring buffer collission
+    // allocate and fill a new out_msg and put it on the linked list
+    // TODO: this is working, but it's not going to be optimal in terms of performance
+    out_msg *new_msg = (out_msg *)sysmem_newptr( sizeof(out_msg) );  
+    strcpy(new_msg->name, name);
+    new_msg->value = out_value;
+    linklist_append(x->out_msg_list, new_msg);
+ 
+    clock_delay(x->out_msg_clock, 0);
 }
+
+// fired by the clock callback in the scheduler thread
+static void csound6_out_msg_cb(t_csound6 *x){
+    // get the value at the current write index
+    //post("csound_out_msg_cb()");
+    t_atom out_atoms[3];
+    out_msg *msg;
+
+    while( true ){
+      msg = (out_msg *) linklist_getindex( x->out_msg_list, 0);
+      if( msg == NULL )
+        break;
+
+      atom_setsym( &out_atoms[0], gensym("outvalue") );
+      atom_setsym( &out_atoms[1], gensym(msg->name) );
+      atom_setfloat( &out_atoms[2], msg->value );
+      outlet_list( x->msg_outlet, NULL, 3, out_atoms );
+      
+      linklist_chuckindex( x->out_msg_list, 0);
+      sysmem_freeptr(msg);
+    }
+}
+
+
+// old naive ring buffer version
+//static void csound6_out_msg_cb(t_csound6 *x){
+//    // get the value at the current write index
+//    post("csound_out_msg_cb()");
+//    //post("  read index: %i  write index: %i", x->out_msg_read_index, x->out_msg_write_index);
+//      
+//    // output the outvalue message as a list 
+//    t_atom out_atoms[3];
+//
+//    if(x->out_msg_count > OUT_MSG_MAX){
+//      object_error((t_object *)x, "Max messages per signal vector %i exceeded, messages may be junk.", OUT_MSG_MAX);
+//    } 
+// 
+//    while( x->out_msg_write_index != x->out_msg_read_index ){
+//      t_symbol *out_sym = gensym( x->out_msg_buf[ x->out_msg_read_index ].name );
+//      double out_val = x->out_msg_buf[ x->out_msg_read_index ].value; 
+//      //post(" - sending outvalue:  %s : %5.2f", out_sym->s_name, out_val);
+//   
+//      atom_setsym( &out_atoms[0], gensym("outvalue") );
+//      atom_setsym( &out_atoms[1], out_sym );
+//      atom_setfloat( &out_atoms[2], out_val );
+//      outlet_list( x->msg_outlet, NULL, 3, out_atoms );
+//
+//      // update the read index and counter
+//      x->out_msg_read_index = x->out_msg_read_index < x->out_msg_max ? x->out_msg_read_index + 1 : 0;
+//      x->out_msg_count--; 
+//    }
+//    //post("  done, read index: %i write index: %i", x->out_msg_read_index, x->out_msg_write_index); 
+//}
 
 // called on the 'chnset' input message, series of key value pairs
 // working
