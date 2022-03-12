@@ -5,6 +5,7 @@
 #include "ext.h"			// standard Max include, always required (except in Jitter)
 #include "ext_obex.h"		// required for "new" style objects
 #include "ext_common.h"
+#include "ext_buffer.h"
 #include "ext_strings.h"
 #include "z_dsp.h"			// required for MSP objects
 #include "common/commonsyms.c"
@@ -77,15 +78,7 @@ typedef struct _csound6 {
   int     message_level;
   char    *cs_message;
 
-  // output msg stuff
-  out_msg *out_msg_buf;
-  int     out_msg_read_index;
-  int     out_msg_write_index;
-  int     out_msg_max;
   t_clock *out_msg_clock;
-  // number of messages in one render, cannot exceed size of ring buffer
-  int     out_msg_count;    
-  
   t_linklist *out_msg_list;
   void    *msg_outlet;
 
@@ -128,6 +121,13 @@ static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
 
 static void message_callback(CSOUND *, int attr, const char *format,va_list valist);
 static void csound6_out_msg_cb(t_csound6 *x); 
+
+static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+static void csound6_buffer_to_table(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+//static void csound6_table_read(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+
+
 //***********************************************************************************************
 
 // misc helpers
@@ -169,6 +169,9 @@ void ext_main(void *r){
   class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
   class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
   class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
+  class_addmethod(c, (method) csound6_table_write, "tabw", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_to_buffer, "tab->buff", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_buffer_to_table, "buff->tab", A_GIMME, 0);
 
   // LEGACY control stuff, NB this was registered for the 'set' message in the PD version 
   // and called csoundapi_channel, but we are initializing with the "controls" message
@@ -216,15 +219,8 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->errors = false;
   x->end = 0;
 
-  // initialize the out msg ring buffer
-  x->out_msg_read_index = 0;
-  x->out_msg_write_index = 0;
-  x->out_msg_count = 0;   
-  x->out_msg_max = OUT_MSG_MAX;
-  x->out_msg_buf = (out_msg *) sysmem_newptr( OUT_MSG_MAX * sizeof(out_msg *) );
   // clock object used for output msg callbacks
   x->out_msg_clock = clock_new((t_object *)x, (method) csound6_out_msg_cb);
- 
   x->out_msg_list = linklist_new();
 	linklist_flags(x->out_msg_list, OBJ_FLAG_MEMORY);		// <-- use sysmem_freeptr() to free items in the list
  
@@ -647,36 +643,6 @@ static void csound6_out_msg_cb(t_csound6 *x){
 }
 
 
-// old naive ring buffer version
-//static void csound6_out_msg_cb(t_csound6 *x){
-//    // get the value at the current write index
-//    post("csound_out_msg_cb()");
-//    //post("  read index: %i  write index: %i", x->out_msg_read_index, x->out_msg_write_index);
-//      
-//    // output the outvalue message as a list 
-//    t_atom out_atoms[3];
-//
-//    if(x->out_msg_count > OUT_MSG_MAX){
-//      object_error((t_object *)x, "Max messages per signal vector %i exceeded, messages may be junk.", OUT_MSG_MAX);
-//    } 
-// 
-//    while( x->out_msg_write_index != x->out_msg_read_index ){
-//      t_symbol *out_sym = gensym( x->out_msg_buf[ x->out_msg_read_index ].name );
-//      double out_val = x->out_msg_buf[ x->out_msg_read_index ].value; 
-//      //post(" - sending outvalue:  %s : %5.2f", out_sym->s_name, out_val);
-//   
-//      atom_setsym( &out_atoms[0], gensym("outvalue") );
-//      atom_setsym( &out_atoms[1], out_sym );
-//      atom_setfloat( &out_atoms[2], out_val );
-//      outlet_list( x->msg_outlet, NULL, 3, out_atoms );
-//
-//      // update the read index and counter
-//      x->out_msg_read_index = x->out_msg_read_index < x->out_msg_max ? x->out_msg_read_index + 1 : 0;
-//      x->out_msg_count--; 
-//    }
-//    //post("  done, read index: %i write index: %i", x->out_msg_read_index, x->out_msg_write_index); 
-//}
-
 // called on the 'chnset' input message, series of key value pairs
 // working
 static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
@@ -714,4 +680,87 @@ static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
   }
 }
 
+// called on the tablewrite message, with table, index, value(s)
+static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  // post("csound6_table_write() s: %s  argc: %i", s->s_name, argc);
+  if( argc < 3){
+    post("csound6~ error: tablewrite requires 3 or more arguments");
+  }
+  long table = (long) atom_getlong(argv);
+  long index = (long) atom_getlong(argv+1);
+  
+  int num_values = argc - 2;
+  double table_length = csoundTableLength(x->csound, table);
+  if(table_length == -1){
+    post("csound6~ error: table %i does not exist", table);
+  }else if(index + num_values >= table_length){
+    post("csound6~ error: table %i is not large enough", table);
+  }else{
+    for(int i=0; i < num_values; i++){
+      double value = (double) atom_getfloat(argv + i + 2);
+      csoundTableSet(x->csound, table, index + i, value); 
+      //post("updated table: %i index: %i value: %f", table, index + i, value);
+    }
+  }
+}
 
+// called on the tab->buff message
+// args: table number, buffer name
+// TODO: add opt table index, opt buff index, opt count
+static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  post("csound6_table_to_buffer() s: %s  argc: %i", s->s_name, argc);
+
+  if(!x->compiled || !x->running){
+    object_error((t_object *)x, "tab->buff: csound must be running");
+    return; 
+  }
+  if(argc < 2 || atom_gettype(argv) != A_LONG || atom_gettype(argv+1) != A_SYM){
+    post("csound6~ error: tab->buff requires 2 arguments, of table numer and buffer name");
+    return;
+  }
+  int table_num = (int) atom_getlong(argv);
+  t_symbol *buffer_name = atom_getsym(argv+1);
+  post("  table: %i buffer: %s", table_num, buffer_name->s_name);
+
+  MYFLT *table;
+  int table_size = csoundGetTable(x->csound, &table, table_num);
+  //int table_length = csoundTableLength(x->csound, table);
+  if(table_size == -1){
+    object_error((t_object *)x, "Csound table %s not found, is csound running?", table_num);
+    return;
+  }
+
+  t_buffer_ref *buffer_ref = buffer_ref_new((t_object *)x, buffer_name);
+  t_buffer_obj *buffer = buffer_ref_getobject(buffer_ref);
+  if(buffer == NULL){
+     object_error((t_object *)x, "Unable to reference buffer named %s", buffer_name->s_name);                
+     return;
+  }
+
+  // we need to lock the buffer before using it
+  float *buffer_data = buffer_locksamples(buffer);
+  long buff_frames = buffer_getframecount(buffer);
+  if(buff_frames == 0){
+     object_error((t_object *)x, "Buffer %s is 0 points in size, aborting.", buffer_name->s_name);                
+     return;
+  }
+  long max_index = table_size < buff_frames ? table_size : buff_frames;
+  //post("copying %i points", max_index);
+  for(int index=0; index < max_index; index++){
+    double table_value = (double) table[index];
+    buffer_data[ index ] = table_value;
+    //post("copying index: %i, value: %f", index, table_value);
+  }
+  // unlock and free buffer reference
+  buffer_unlocksamples(buffer);
+  buffer_setdirty(buffer);
+  object_free(buffer_ref);
+}
+ 
+
+// called on the tab->buff message
+// args: buffer_name, table number
+static void csound6_buffer_to_table(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  post("csound6_buffer_to_table() s: %s  argc: %i", s->s_name, argc);
+
+}
