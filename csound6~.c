@@ -169,9 +169,12 @@ void ext_main(void *r){
   class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
   class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
   class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
-  class_addmethod(c, (method) csound6_table_write, "tabw", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_table_to_buffer, "tab->buff", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_buffer_to_table, "buff->tab", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_write, "tablewrite", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_write, "tblw", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_to_buffer, "table->buffer", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_to_buffer, "t->b", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_buffer_to_table, "buffer->table", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_buffer_to_table, "b->t", A_GIMME, 0);
 
   // LEGACY control stuff, NB this was registered for the 'set' message in the PD version 
   // and called csoundapi_channel, but we are initializing with the "controls" message
@@ -715,7 +718,7 @@ static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom 
     return; 
   }
   if(argc < 2 || atom_gettype(argv) != A_LONG || atom_gettype(argv+1) != A_SYM){
-    post("csound6~ error: tab->buff requires 2 arguments, of table numer and buffer name");
+    post("csound6~ error: tab->buff requires 2 arguments: table number, buffer name");
     return;
   }
   int table_num = (int) atom_getlong(argv);
@@ -758,9 +761,53 @@ static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom 
 }
  
 
-// called on the tab->buff message
+// called on the buff->tab message
 // args: buffer_name, table number
 static void csound6_buffer_to_table(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-  post("csound6_buffer_to_table() s: %s  argc: %i", s->s_name, argc);
+  //post("csound6_buffer_to_table() s: %s  argc: %i", s->s_name, argc);
 
+  if(!x->compiled || !x->running){
+    object_error((t_object *)x, "buff->tab: csound must be running");
+    return; 
+  }
+  if(argc < 2 || atom_gettype(argv) != A_SYM || atom_gettype(argv+1) != A_LONG ){
+    post("csound6~ error: buff->tab requires 2 arguments: buffer name, table number");
+    return;
+  }
+  t_symbol *buffer_name = atom_getsym(argv);
+  int table_num = (int) atom_getlong(argv+1);
+  //post("  table: %i buffer: %s", table_num, buffer_name->s_name);
+
+  MYFLT *table;
+  int table_size = csoundGetTable(x->csound, &table, table_num);
+  if(table_size == -1){
+    object_error((t_object *)x, "Csound table %s not found, is csound running?", table_num);
+    return;
+  }
+
+  t_buffer_ref *buffer_ref = buffer_ref_new((t_object *)x, buffer_name);
+  t_buffer_obj *buffer = buffer_ref_getobject(buffer_ref);
+  if(buffer == NULL){
+     object_error((t_object *)x, "Unable to reference buffer named %s", buffer_name->s_name);                
+     return;
+  }
+
+  // we need to lock the buffer before using it
+  float *buffer_data = buffer_locksamples(buffer);
+  long buff_frames = buffer_getframecount(buffer);
+  if(buff_frames == 0){
+     object_error((t_object *)x, "Buffer %s is 0 points in size, aborting.", buffer_name->s_name);                
+     return;
+  }
+  long max_index = table_size < buff_frames ? table_size : buff_frames;
+  //post("copying %i points", max_index);
+  for(int index=0; index < max_index; index++){
+    double buffer_value = (double) buffer_data[index];
+    table[ index ] = buffer_value;
+    //post("copying index: %i, value: %f", index, table_value);
+  }
+  // unlock and free buffer reference
+  buffer_unlocksamples(buffer);
+  buffer_setdirty(buffer);
+  object_free(buffer_ref);
 }
