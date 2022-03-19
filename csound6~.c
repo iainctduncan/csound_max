@@ -18,11 +18,12 @@
 #include <csound/csound.h>
 #endif
 
-
 #define CS_MAX_CHANS 32
 #define MAXMESSTRING 16384
 #define OUT_MSG_NAME_SIZE 64
 #define OUT_MSG_MAX 1024
+
+#define OUT_CHAN_NAME_SIZE 64
 
 //#define MIDI_QUEUE_MAX 1024
 //#define MIDI_QUEUE_MASK 1023
@@ -41,6 +42,13 @@ typedef struct _out_msg {
   char name[OUT_MSG_NAME_SIZE];
   MYFLT   value;
 } out_msg;
+
+// linked list struct for out channels we are listening to
+typedef struct _out_channel {
+  char  name[OUT_CHAN_NAME_SIZE];
+  int   update;   // 0 means don't listen anymore
+  int   kpass;    // counter of kpasses for sub krate listening
+} out_channel;
 
 typedef struct _csound6 {
 	t_pxobject		ob;			
@@ -82,6 +90,9 @@ typedef struct _csound6 {
   t_linklist *out_msg_list;
   void    *msg_outlet;
 
+  bool    output_channels;
+  t_linklist *out_channels;
+  t_clock *out_chan_clock;
   // TODO maybe? dynamic orchestra compilation
   //char *orc;
 
@@ -107,6 +118,7 @@ static void csound6_offset(t_csound6 *x, double arg);
 static void csound6_messages(t_csound6 *x, long arg);
 static int csound6_start_csound(t_csound6 *x);
 static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+static void csound6_sevent(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 
 // channel functions ported from Pd version, output not yet done
 static channelname *create_channel(channelname *ch, char *channel);
@@ -121,6 +133,10 @@ static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
 
 static void message_callback(CSOUND *, int attr, const char *format,va_list valist);
 static void csound6_out_msg_cb(t_csound6 *x); 
+
+static void csound6_outchannel_set(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
+static void csound6_out_chan_cb(t_csound6 *x); 
+static void csound6_send_channel_output(out_channel *chan, t_csound6 *x);
 
 static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
 static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
@@ -167,6 +183,7 @@ void ext_main(void *r){
   class_addmethod(c, (method) csound6_rewind, "rewind", NULL, 0);
   class_addmethod(c, (method) csound6_offset, "offset", A_FLOAT, 0);
   class_addmethod(c, (method) csound6_event, "event", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_sevent, "sevent", A_GIMME, 0);
   class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
   class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
   class_addmethod(c, (method) csound6_table_write, "tablewrite", A_GIMME, 0);
@@ -175,6 +192,9 @@ void ext_main(void *r){
   class_addmethod(c, (method) csound6_table_to_buffer, "t->b", A_GIMME, 0);
   class_addmethod(c, (method) csound6_buffer_to_table, "buffer->table", A_GIMME, 0);
   class_addmethod(c, (method) csound6_buffer_to_table, "b->t", A_GIMME, 0);
+
+  class_addmethod(c, (method) csound6_outchannel_set, "outchannel", A_GIMME, 0);
+  //class_addmethod(c, (method) csound6_outchannel_set, "outputchannels", A_INT, 0);
 
   // LEGACY control stuff, NB this was registered for the 'set' message in the PD version 
   // and called csoundapi_channel, but we are initializing with the "controls" message
@@ -226,7 +246,12 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->out_msg_clock = clock_new((t_object *)x, (method) csound6_out_msg_cb);
   x->out_msg_list = linklist_new();
 	linklist_flags(x->out_msg_list, OBJ_FLAG_MEMORY);		// <-- use sysmem_freeptr() to free items in the list
- 
+
+  // TODO: should be an attribute?
+  x->output_channels = true;
+  x->out_chan_clock = clock_new((t_object *)x, (method) csound6_out_chan_cb);
+  x->out_channels = linklist_new();
+	linklist_flags(x->out_channels, OBJ_FLAG_MEMORY);		// <-- use sysmem_freeptr() to free items in the list
   
   // loop through args to find csd, orc, and sco files
   for(int i=0; i < argc; i++){
@@ -433,14 +458,61 @@ static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
     return;
   }
   // make an array of floats for the pfields arguments
-  MYFLT   *pfields;
+  // if, in converting, we find a symbol atom, we abort making an array of floats
+  bool use_string_event = false;
+  MYFLT *pfields;
   int num_pfields = argc - 1;
   pfields  = (MYFLT *) sysmem_newptr( num_pfields * sizeof(MYFLT) );
-  for (int i=1; i<argc; i++) pfields[i-1] = atom_getfloat( &argv[i] );
-
-  int res = csoundScoreEvent(x->csound, evt_type->s_name[0], pfields, num_pfields);
-  
+  for (int i=1; i<argc; i++){
+    if( atom_gettype(&argv[i]) == A_LONG || atom_gettype(&argv[i]) == A_FLOAT){
+        pfields[i-1] = atom_getfloat( &argv[i] );
+    }else{
+      // found a string atom, bust out
+      use_string_event = true;
+      break;
+    }
+  }
+  if(use_string_event){
+    //post("sending string event");
+    long size = 0;
+    char *atoms_as_text = NULL;
+    t_max_err err = atom_gettext(argc, argv, &size, &atoms_as_text, OBEX_UTIL_ATOM_GETTEXT_SYM_FORCE_QUOTE);
+    if(err == MAX_ERR_NONE && size && atoms_as_text) {
+      // wipe out the quotes around the first atom
+      atoms_as_text[0] = atoms_as_text[2] = ' ';
+      csoundInputMessage(x->csound, atoms_as_text);
+    }else{
+      object_error((t_object *)x, "csound6~ error processing score event");
+    }
+  }else{
+    int res = csoundScoreEvent(x->csound, evt_type->s_name[0], pfields, num_pfields);
+  }
   sysmem_freeptr(pfields);
+}
+
+// sevent message, handles events as csound string line events
+static void csound6_sevent(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  if( x->running == false ){
+    post("csound6~ realtime event error: csound is not running");
+    return;
+  }
+  t_symbol *evt_type = atom_getsym(argv);
+  if( evt_type != gensym("i") && evt_type != gensym("f") && evt_type != gensym("e") ){
+    post("csound6~ error: valid event types are i, f, and e");
+    return;
+  }
+  long size = 0;
+  char *atoms_as_text = NULL;
+  t_max_err err = atom_gettext(argc, argv, &size, &atoms_as_text, OBEX_UTIL_ATOM_GETTEXT_SYM_FORCE_QUOTE);
+  if(err == MAX_ERR_NONE && size && atoms_as_text) {
+    // wipe out the quotes around the first atom
+    atoms_as_text[0] = ' ';
+    atoms_as_text[2] = ' ';
+    csoundInputMessage(x->csound, atoms_as_text);
+  }else{
+    object_error((t_object *)x, "csound6~ error processing string event");
+  }
+
 }
 
 // registers a function for the signal chain in Max
@@ -480,6 +552,10 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
             outs[chan][dest_sample_index] = csoundGetSpoutSample(x->csound, s, chan);
           }
         }
+      }
+      // if outchannel listening is on, ask for the kpass callback
+      if(x->output_channels == true){
+        clock_delay(x->out_chan_clock, 0);
       }
     } // end kpass loop
   }
@@ -683,6 +759,100 @@ static void csound6_set_channel(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
   }
 }
 
+/*********************************************************************************/
+// out channel code for direct monitoring (not the same as outvalue legacy system)
+
+long outchan_cmp(void *entry, void *name){
+  out_channel *chan_entry = (out_channel *)entry;
+  char *chan_name = (char *)name;
+  //post("outchan_cmp comparing '%s' '%s'", chan_name, chan_entry->name);
+  int res = strcmp(chan_name, chan_entry->name) == 0;
+  //post("  res: %i", res);
+  return res;
+}
+
+static out_channel* csound6_get_out_channel(t_csound6 *x, char *channel_name){
+  void *chan_entry;
+  long index;
+  index = linklist_findfirst(x->out_channels, &chan_entry, outchan_cmp, (void *)channel_name);  
+  if(index != -1){
+    //post("index: %i, item found: %s", index, ((out_channel *)chan_entry)->name);
+    return (out_channel *) chan_entry;
+  }else{
+    //post("index: %i, item not found", index);
+    return NULL;
+  }
+}
+
+// outchannel message registers a channel for listening
+static void csound6_outchannel_set(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
+  // post("csound6_outchannel_set");
+  if(argc != 2 || atom_gettype(argv) != A_SYM || atom_gettype(argv+1) != A_LONG){
+    post("csound6~ error: outchannel requires 2 arguments of symbol and int");
+    return;
+  }
+  char *chan_name = atom_getsym(argv)->s_name;
+  int  update_arg = (int) atom_getlong(argv+1);
+
+  // first check if already registered to update it
+  out_channel *chan_entry = csound6_get_out_channel(x, chan_name);
+  if(chan_entry && update_arg <= 0){
+    if(x->post_messages)
+      post("csound6~ deleting output kchan %s", chan_entry->name);
+      linklist_deleteobject(x->out_channels, (void *)chan_entry);
+      sysmem_freeptr(chan_entry);
+  }
+  else if(chan_entry && update_arg > 0){
+    //post(" - updating existing entry update to %i", update_arg);
+    chan_entry->update = update_arg;
+    if(x->post_messages)
+      post("csound6~ output kchan %s set to %i ksmps", chan_entry->name, chan_entry->update);
+  }
+  else if(chan_entry == NULL && update_arg > 0){
+    // register new channel to listen to
+    out_channel *chan_reg = (out_channel *) sysmem_newptr( sizeof(out_channel) );  
+    strcpy(chan_reg->name, chan_name);
+    chan_reg->update = (int) atom_getlong(argv + 1);
+    linklist_append(x->out_channels, chan_reg);
+    if(x->post_messages)
+      post("csound6~ output kchan %s set to %i ksmps", chan_reg->name, chan_reg->update);
+  }
+  else if(chan_entry == NULL && update_arg <= 0){
+    //post(" - updating existing entry update to %i", update_arg);
+    if(x->post_messages)
+      post("csound6~ output kchan %s not registered", chan_name);
+  }
+}
+
+// clock callback, set to fire in perform routine if output_channels is on  
+// iterates through each entry in the out channel linked list
+static void csound6_out_chan_cb(t_csound6 *x){
+  linklist_funall(x->out_channels, (method)csound6_send_channel_output, x);
+}
+
+// iterator function for the above
+static void csound6_send_channel_output(out_channel *chan, t_csound6 *x){
+  //post("csound6_send_channel_output() channel: %s update: %i", chan->name, chan->update);
+  int error;
+  t_atom out_atoms[3];
+
+  if( chan->update != 0 ){
+      if(chan->kpass == 0){
+          double chan_val = csoundGetControlChannel(x->csound, chan->name, &error);
+          //post("csound6_send_channel_output() chan: %s  value: %f  error: %i", chan->name, chan_val, error);
+          atom_setsym( &out_atoms[0], gensym("kchan") );
+          atom_setsym( &out_atoms[1], gensym(chan->name) );
+          atom_setfloat( &out_atoms[2], chan_val );
+          outlet_list( x->msg_outlet, NULL, 3, out_atoms );
+      }
+      // increment or rollover the kpass counter
+      chan->kpass = (chan->kpass >= chan->update - 1 ? 0 : chan->kpass + 1);
+  }
+}
+
+
+/*********************************************************************************/
+// Table IO functions
 // called on the tablewrite message, with table, index, value(s)
 static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
   // post("csound6_table_write() s: %s  argc: %i", s->s_name, argc);
