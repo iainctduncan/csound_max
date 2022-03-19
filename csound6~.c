@@ -93,6 +93,9 @@ typedef struct _csound6 {
   bool    output_channels;
   t_linklist *out_channels;
   t_clock *out_chan_clock;
+
+  t_clock *score_done_clock;
+
   // TODO maybe? dynamic orchestra compilation
   //char *orc;
 
@@ -115,6 +118,7 @@ static void csound6_start(t_csound6 *x);
 static void csound6_stop(t_csound6 *x);
 static void csound6_rewind(t_csound6 *x);
 static void csound6_offset(t_csound6 *x, double arg);
+static void csound6_score_done_cb(t_csound6 *x);
 static void csound6_messages(t_csound6 *x, long arg);
 static int csound6_start_csound(t_csound6 *x);
 static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv);
@@ -187,7 +191,7 @@ void ext_main(void *r){
   class_addmethod(c, (method) csound6_set_channel, "chnset", A_GIMME, 0);
   class_addmethod(c, (method) csound6_messages, "messages", A_LONG, 0);
   class_addmethod(c, (method) csound6_table_write, "tablewrite", A_GIMME, 0);
-  class_addmethod(c, (method) csound6_table_write, "tblw", A_GIMME, 0);
+  class_addmethod(c, (method) csound6_table_write, "tabw", A_GIMME, 0);
   class_addmethod(c, (method) csound6_table_to_buffer, "table->buffer", A_GIMME, 0);
   class_addmethod(c, (method) csound6_table_to_buffer, "t->b", A_GIMME, 0);
   class_addmethod(c, (method) csound6_buffer_to_table, "buffer->table", A_GIMME, 0);
@@ -241,6 +245,9 @@ void *csound6_new(t_symbol *s, long argc, t_atom *argv){
   x->sco_file = NULL;
   x->errors = false;
   x->end = 0;
+
+  // callback for when score is complete
+  x->score_done_clock = clock_new((t_object *)x, (method) csound6_score_done_cb);
 
   // clock object used for output msg callbacks
   x->out_msg_clock = clock_new((t_object *)x, (method) csound6_out_msg_cb);
@@ -409,6 +416,13 @@ static void csound6_offset(t_csound6 *x, double arg){
   }
 }
 
+static void csound6_score_done_cb(t_csound6 *x){
+  if(x->post_messages){
+    post("csound6~ score finished");
+  }
+  outlet_bang(x->msg_outlet); 
+}
+
 // sanity check of sr, ksmps, channels
 // should be run after any compile
 // has side effect of setting max_vector_size and kpasses_per_vector 
@@ -453,13 +467,16 @@ static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
     return;
   }
   t_symbol *evt_type = atom_getsym(argv);
-  if( evt_type != gensym("i") && evt_type != gensym("f") && evt_type != gensym("e") ){
-    post("csound6~ error: valid event types are i, f, and e");
+  if( evt_type != gensym("i") && evt_type != gensym("f") 
+    && evt_type != gensym("e") ){
+    post("csound6~ error: valid event types are i, f, and e.");
     return;
   }
   // make an array of floats for the pfields arguments
   // if, in converting, we find a symbol atom, we abort making an array of floats
-  bool use_string_event = false;
+  // t events always use string events
+  bool use_string_event = (evt_type == gensym("t") ? true : false);
+
   MYFLT *pfields;
   int num_pfields = argc - 1;
   pfields  = (MYFLT *) sysmem_newptr( num_pfields * sizeof(MYFLT) );
@@ -480,6 +497,7 @@ static void csound6_event(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
     if(err == MAX_ERR_NONE && size && atoms_as_text) {
       // wipe out the quotes around the first atom
       atoms_as_text[0] = atoms_as_text[2] = ' ';
+      //post("atoms_as_text: %s", atoms_as_text);
       csoundInputMessage(x->csound, atoms_as_text);
     }else{
       object_error((t_object *)x, "csound6~ error processing score event");
@@ -544,6 +562,8 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
       // render a ksmp vector, which updates the csout and csin pointers
       if( x->end = csoundPerformKsmps(x->csound) ){
         // todo maybe?: pd version sends a bang when done
+        post("x->end reached");
+        clock_delay(x->score_done_clock, 0);
         x->running = false;
       }else{
         for (int chan=0; chan < x->numlets; chan++){
@@ -859,14 +879,19 @@ static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
   if( argc < 3){
     post("csound6~ error: tablewrite requires 3 or more arguments");
   }
+  if(!x->compiled || !x->running){
+    object_error((t_object *)x, "tablewrite: csound must be running");
+    return; 
+  }
   long table = (long) atom_getlong(argv);
   long index = (long) atom_getlong(argv+1);
-  
+  //post("  table: %i  index: %i", table, index);
+
   int num_values = argc - 2;
   double table_length = csoundTableLength(x->csound, table);
   if(table_length == -1){
     post("csound6~ error: table %i does not exist", table);
-  }else if(index + num_values >= table_length){
+  }else if(index + num_values > table_length){
     post("csound6~ error: table %i is not large enough", table);
   }else{
     for(int i=0; i < num_values; i++){
@@ -881,7 +906,7 @@ static void csound6_table_write(t_csound6 *x, t_symbol *s, int argc, t_atom *arg
 // args: table number, buffer name
 // TODO: add opt table index, opt buff index, opt count
 static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom *argv){
-  post("csound6_table_to_buffer() s: %s  argc: %i", s->s_name, argc);
+  //post("csound6_table_to_buffer() s: %s  argc: %i", s->s_name, argc);
 
   if(!x->compiled || !x->running){
     object_error((t_object *)x, "tab->buff: csound must be running");
@@ -893,7 +918,7 @@ static void csound6_table_to_buffer(t_csound6 *x, t_symbol *s, int argc, t_atom 
   }
   int table_num = (int) atom_getlong(argv);
   t_symbol *buffer_name = atom_getsym(argv+1);
-  post("  table: %i buffer: %s", table_num, buffer_name->s_name);
+  //post("  table: %i buffer: %s", table_num, buffer_name->s_name);
 
   MYFLT *table;
   int table_size = csoundGetTable(x->csound, &table, table_num);
@@ -974,10 +999,9 @@ static void csound6_buffer_to_table(t_csound6 *x, t_symbol *s, int argc, t_atom 
   for(int index=0; index < max_index; index++){
     double buffer_value = (double) buffer_data[index];
     table[ index ] = buffer_value;
-    //post("copying index: %i, value: %f", index, table_value);
+    //post("copying index: %i, value: %f", index, buffer_value);
   }
   // unlock and free buffer reference
   buffer_unlocksamples(buffer);
-  buffer_setdirty(buffer);
   object_free(buffer_ref);
 }
