@@ -297,7 +297,7 @@ static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
   // if csd, we compile on that, otherwise uses orc and optional sco
   if( x->csd_file ){
     post("compiling csd: %s", x->csd_file);
-    x->csd_fullpath = csound6_get_fullpath(x->csd_file);
+    x->csd_fullpath = (char *) csound6_get_fullpath(x->csd_file);
     if(x->csd_fullpath){
       post("  full path: %s", x->csd_fullpath);
       const char *cs_cmdl[] = { "csound", x->csd_fullpath};
@@ -306,7 +306,7 @@ static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
   }
   else if( x->orc_file && x->sco_file == NULL){
     post("compiling orc file: %s", x->orc_file);
-    x->orc_fullpath = csound6_get_fullpath(x->orc_file);
+    x->orc_fullpath = (char *) csound6_get_fullpath(x->orc_file);
     if(x->orc_fullpath){
       const char *cs_cmdl[] = { "csound", x->orc_fullpath};
       x->compiled = csoundCompile(x->csound, 2, (const char **)cs_cmdl) == 0 ? true : false;   
@@ -314,8 +314,8 @@ static void csound6_init_csound(t_csound6 *x, bool is_initial_compile){
   }
   else if( x->orc_file && x->sco_file){
     post("compiling orc/sco pair: %s %s", x->orc_file, x->sco_file);
-    x->orc_fullpath = csound6_get_fullpath(x->orc_file);
-    x->sco_fullpath = csound6_get_fullpath(x->sco_file);
+    x->orc_fullpath = (char *) csound6_get_fullpath(x->orc_file);
+    x->sco_fullpath = (char *) csound6_get_fullpath(x->sco_file);
     if( x->orc_fullpath && x->sco_fullpath ){
       const char *cs_cmdl[] = { "csound", x->orc_fullpath, x->sco_fullpath};
       x->compiled = csoundCompile(x->csound, 3, (const char **)cs_cmdl) == 0 ? true : false;   
@@ -560,7 +560,7 @@ static void csound6_perform64(t_csound6 *x, t_object *dsp64, double **ins, long 
           }
       }
       // render a ksmp vector, which updates the csout and csin pointers
-      if( x->end = csoundPerformKsmps(x->csound) ){
+      if( (x->end = csoundPerformKsmps(x->csound) ) ){
         // todo maybe?: pd version sends a bang when done
         post("x->end reached");
         clock_delay(x->score_done_clock, 0);
