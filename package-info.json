@@ -11,7 +11,7 @@
             "min_version" : "none"
         },
         "windows" : {
-            "platform" : [ "x64", "ia32" ],
+            "platform" : [ "x64" ],
             "min_version" : "none"
         }
     },
@@ -19,6 +19,6 @@
         "copyright" : "Copyright (c) 2022 Iain C.T. Duncan."
     },
     "tags" : [ "csound"],
-    "version" : "0.1.0",
+    "version" : "0.2.0",
     "website" : "https://github.com/iainctduncan/csound_max"
 }
