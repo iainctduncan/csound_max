@@ -8,6 +8,9 @@ and latency than the legacy csound~ object. It does not attempt to port all the 
 of the legacy csound object, but does provide a newer and higher performance facility for 
 converting krate DSP to Max messages.
 
+## News:
+- 2022-03-20 Version 0.2 is up, with table and buffer i/o and improved control channel i/o
+
 ## Features
 - Allows playing csd, orc, and sco files
 - Plays realtime messages with score syntax
