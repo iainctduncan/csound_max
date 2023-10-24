@@ -20,6 +20,7 @@ converting krate DSP to Max messages.
 - Can receive realtime modulation data using the chnget and invalue opcodes
 - Enables listening to Csound krate channels as Max messages, at divisors of ksmps
 - Outvalue opcode can be used to send Max messages explicitly
+- Provides facilities for copying between Max buffers and csound tables.
 
 ## Limitations
 - Ksmps must be an even divisor of the Max signal vector size so that there are one
