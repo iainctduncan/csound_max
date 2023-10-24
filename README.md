@@ -1,6 +1,6 @@
 # Csound6~ 
 ## A minimal real time csound class using the Csound6 API
-### (c) Iain C.T. Duncan 2022, based on work by Victor Lazzarini, (c) 2005-2013.
+### (c) Iain C.T. Duncan 2023, based on work by Victor Lazzarini, (c) 2005-2013.
 
 Csound6~ is mostly a port of Victor Lazzarini's csound object for Pure Data. It provides
 a minimal csound interface using the csound API and thus should provide better performance
@@ -9,6 +9,7 @@ of the legacy csound object, but does provide a newer and higher performance fac
 converting krate DSP to Max messages.
 
 ## News:
+- 2023-10-23 Version 0.2.1 is up, with a universal binary for Intel and Apple Silicon Macs
 - 2022-03-20 Version 0.2 is up, with table and buffer i/o and improved control channel i/o
 
 ## Features
@@ -28,7 +29,7 @@ converting krate DSP to Max messages.
   using Max midi and communicating with score messages is recommended instead.
 
 ## Installation
-- Csound6~ version 0.2 is available as a binary for Mac (Intel) and Win64, and as source.
+- Csound6~ version 0.2.1 is available as a binary for Mac (Intel) and Win64, and as source.
 - Install Csound6 for your platform. The csound6~ object will use the csound version installed on your machine, so there is no need to reinstall csound6~ when you upgrade Csound. Download it from https://csound.com/download.html
 - Download the release and expand in your Max packages directory.
 - To run the help file, ensure the path to the help folder is in your Max filepaths

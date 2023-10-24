@@ -7,7 +7,7 @@
     "name" : "csound6~",
     "os" : {
         "macintosh" : {
-            "platform" : [ "x64" ],
+            "platform" : [ "x64", "arm64" ],
             "min_version" : "none"
         },
         "windows" : {
@@ -16,9 +16,9 @@
         }
     },
     "package_extra" : {
-        "copyright" : "Copyright (c) 2022 Iain C.T. Duncan."
+        "copyright" : "Copyright (c) 2023 Iain C.T. Duncan."
     },
     "tags" : [ "csound"],
-    "version" : "0.2.0",
+    "version" : "0.2.1",
     "website" : "https://github.com/iainctduncan/csound_max"
 }
